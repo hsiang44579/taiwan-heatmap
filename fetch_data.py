@@ -63,8 +63,27 @@ def load_day(date_str):
     with open(path, encoding='utf-8') as f:
         return json.load(f)
 
-def parse_tse_stocks(prices, code_to_ind):
+def build_capital_map(basic_list):
+    """從公司基本資料建立 {code: (paid_in_capital, par_value)} 的字典"""
+    m = {}
+    for r in basic_list:
+        code = r.get('公司代號', '')
+        cap  = parse_num(r.get('實收資本額'))
+        par  = parse_num(r.get('普通股每股面額')) or 10.0
+        if code and cap:
+            m[code] = (cap, par)
+    return m
+
+def calc_mktcap(close, capital_map, code):
+    info = capital_map.get(code)
+    if not info or not close:
+        return 0
+    cap, par = info
+    return round(close * cap / par)
+
+def parse_tse_stocks(prices, code_to_ind, capital_map=None):
     trade_date = twse_date_to_ad(prices[0].get('Date', '')) if prices else None
+    capital_map = capital_map or {}
     stocks = []
     for r in prices:
         code = r.get('Code', '')
@@ -82,6 +101,7 @@ def parse_tse_stocks(prices, code_to_ind):
             'code': code, 'name': r.get('Name', ''),
             'close': close, 'pct': pct,
             'value': int(value),
+            'mktcap': calc_mktcap(close, capital_map, code),
             'sector': INDUSTRY_NAMES.get(ind_code, '其他'),
         })
     return stocks, trade_date
@@ -93,7 +113,7 @@ def get_field(r, *names):
             return str(v).strip()
     return ''
 
-def parse_otc_stocks(data, code_to_ind):
+def parse_otc_stocks(data, code_to_ind, capital_map=None):
     if not data:
         return [], None
     records = data if isinstance(data, list) else []
@@ -102,6 +122,7 @@ def parse_otc_stocks(data, code_to_ind):
         return [], None
 
     print(f"      [OTC 欄位] {list(records[0].keys())[:10]}")
+    capital_map = capital_map or {}
 
     trade_date = None
     stocks = []
@@ -127,6 +148,7 @@ def parse_otc_stocks(data, code_to_ind):
             'code': code, 'name': name,
             'close': close, 'pct': pct,
             'value': int(value),
+            'mktcap': calc_mktcap(close, capital_map, code),
             'sector': INDUSTRY_NAMES.get(ind_code, '其他'),
         })
     return stocks, trade_date
@@ -203,7 +225,8 @@ def compute_period(sorted_dates, n, all_data, market='tse'):
             'totalValue': sec_total,
             'avgPct': round(avg_pct, 2),
             'stocks': [{'c': i['code'], 'n': i['name'], 'p': i['pct'],
-                        'v': i['value'], 'cl': round(i['close'], 2)} for i in items],
+                        'v': i['value'], 'cl': round(i['close'], 2),
+                        'm': i.get('mktcap', 0)} for i in items],
         })
     sectors.sort(key=lambda x: x['totalValue'], reverse=True)
 
@@ -215,22 +238,25 @@ def main():
     print(f"  {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 52)
 
-    # 1. 上市產業分類
+    # 1. 上市產業分類＋資本額
     print("\n[1/5] 抓取上市產業分類...")
     try:
         basic_tse = fetch("https://openapi.twse.com.tw/v1/opendata/t187ap03_L")
         code_to_ind_tse = {r['公司代號']: r['產業別'] for r in basic_tse}
-        print(f"      {len(code_to_ind_tse)} 支上市公司")
+        capital_map_tse = build_capital_map(basic_tse)
+        print(f"      {len(code_to_ind_tse)} 支上市公司　(含市值資料 {len(capital_map_tse)} 支)")
     except Exception as e:
         print(f"      錯誤: {e}")
         sys.exit(1)
 
-    # 2. 上櫃產業分類
+    # 2. 上櫃產業分類＋資本額
     print("\n[2/5] 抓取上櫃產業分類...")
+    capital_map_otc = {}
     try:
         basic_otc = fetch("https://openapi.twse.com.tw/v1/opendata/t187ap03_O")
         code_to_ind_otc = {r['公司代號']: r['產業別'] for r in basic_otc}
-        print(f"      {len(code_to_ind_otc)} 支上櫃公司")
+        capital_map_otc = build_capital_map(basic_otc)
+        print(f"      {len(code_to_ind_otc)} 支上櫃公司　(含市值資料 {len(capital_map_otc)} 支)")
     except Exception as e:
         print(f"      上櫃分類失敗（繼續）: {e}")
         code_to_ind_otc = {}
@@ -239,8 +265,9 @@ def main():
     print("\n[3/5] 抓取上市行情...")
     try:
         tse_prices = fetch("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL")
-        tse_stocks, trade_date = parse_tse_stocks(tse_prices, code_to_ind_tse)
-        print(f"      {len(tse_stocks)} 支　交易日: {trade_date}")
+        tse_stocks, trade_date = parse_tse_stocks(tse_prices, code_to_ind_tse, capital_map_tse)
+        mc_count = sum(1 for s in tse_stocks if s.get('mktcap', 0) > 0)
+        print(f"      {len(tse_stocks)} 支　交易日: {trade_date}　市值計算: {mc_count} 支")
     except Exception as e:
         print(f"      錯誤: {e}")
         sys.exit(1)
@@ -250,7 +277,7 @@ def main():
     otc_stocks = []
     try:
         otc_raw = fetch("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes")
-        otc_stocks, otc_date = parse_otc_stocks(otc_raw, code_to_ind_otc)
+        otc_stocks, otc_date = parse_otc_stocks(otc_raw, code_to_ind_otc, capital_map_otc)
         print(f"      {len(otc_stocks)} 支　交易日: {otc_date}")
         if not trade_date and otc_date:
             trade_date = otc_date

@@ -174,6 +174,12 @@ body{
       <button class="btn" data-period="60d">60 日</button>
     </div>
     <div class="divider"></div>
+    <span class="ctrl-label">區塊</span>
+    <div class="ctrl-group">
+      <button class="btn active" data-size="mktcap">市值</button>
+      <button class="btn" data-size="value">成交值</button>
+    </div>
+    <div class="divider"></div>
     <label class="chk-wrap">
       <input type="checkbox" id="excl-tsmc"> 排除台積電 (2330)
     </label>
@@ -190,7 +196,7 @@ body{
     <span>跌多</span>
     <span style="flex:1;height:1px;background:linear-gradient(to right,#05531a,#1da83a,#b0ddb8,#c8bc9a,#e8a8a8,#e05050,#850d0d);min-width:60px;border-radius:2px"></span>
     <span>漲多</span>
-    <span class="legend-note">區塊大小 = 成交值　點擊產業標籤可展開</span>
+    <span class="legend-note" id="size-note">區塊大小 = 市值　點擊產業標籤可展開</span>
   </div>
 
   <div id="hm-wrap"><div id="hm-stage"></div></div>
@@ -233,14 +239,16 @@ body{
   const ttEl    = document.getElementById('tt');
   let currentPeriod = '1d';
   let currentMarket = 'tse';
+  let sizeMetric    = 'mktcap';  // 'mktcap' | 'value'
   let exclTSMC  = false;
   const GAP   = 2;
   const LBL_H = 18;
 
   // ── utils ────────────────────────────────────────────
   function fv(v) {
-    if (v >= 1e8) return (v / 1e8).toFixed(1) + '億';
-    if (v >= 1e4) return (v / 1e4).toFixed(0) + '萬';
+    if (v >= 1e12) return (v / 1e12).toFixed(2) + '兆';
+    if (v >= 1e8)  return (v / 1e8).toFixed(1) + '億';
+    if (v >= 1e4)  return (v / 1e4).toFixed(0) + '萬';
     return v + '';
   }
 
@@ -322,11 +330,16 @@ body{
     document.getElementById('tt-c').textContent  = stk.c;
     document.getElementById('tt-cl').textContent = stk.cl ? stk.cl.toFixed(2) : '—';
     document.getElementById('tt-plbl').textContent = pl + '漲跌';
-    document.getElementById('tt-vlbl').textContent = pl + '成交值';
     const tp = document.getElementById('tt-p');
     tp.textContent = (stk.p > 0 ? '+' : '') + stk.p.toFixed(2) + '%';
     tp.className = stk.p > 0.1 ? 'tt-up' : stk.p < -0.1 ? 'tt-dn' : 'tt-flat';
-    document.getElementById('tt-v').textContent = fv(stk.v);
+    if (sizeMetric === 'mktcap') {
+      document.getElementById('tt-vlbl').textContent = '市值';
+      document.getElementById('tt-v').textContent = stk.m ? fv(stk.m) : '—';
+    } else {
+      document.getElementById('tt-vlbl').textContent = pl + '成交值';
+      document.getElementById('tt-v').textContent = fv(stk.v);
+    }
     document.getElementById('tt-s').textContent = secName;
     ttEl.style.display = 'block';
   }
@@ -350,24 +363,25 @@ body{
   }
 
   // ── sector modal ─────────────────────────────────────
-  function openSectorModal(sec, maxAbsPct) {
+  function openSectorModal(sec, maxAbsPct, sk) {
     const modal = document.getElementById('sec-modal');
     const body  = document.getElementById('modal-body');
+    const szLabel = sizeMetric === 'mktcap' ? '市值' : '成交值';
+    const totalSz = sec.stocks.reduce((s, i) => s + (i[sk] || i.v), 0);
     document.getElementById('modal-title').textContent = sec.name;
     document.getElementById('modal-meta').textContent  =
-      `${sec.stocks.length} 支　成交值 ${fv(sec.totalValue)}　均 ${sec.avgPct > 0 ? '+' : ''}${sec.avgPct.toFixed(2)}%`;
+      `${sec.stocks.length} 支　${szLabel} ${fv(totalSz)}　均 ${sec._avgPct > 0 ? '+' : ''}${(sec._avgPct || sec.avgPct).toFixed(2)}%`;
     body.innerHTML = '';
     modal.classList.add('open');
 
-    // 等 DOM 更新後取尺寸
     requestAnimationFrame(() => {
       const W = body.clientWidth  || 800;
       const H = body.clientHeight || 500;
       const wrap = document.createElement('div');
       wrap.style.cssText = `position:relative;width:${W}px;height:${H}px`;
 
-      const tot = sec.stocks.reduce((s, i) => s + i.v, 0);
-      const items = sec.stocks.map(i => ({ ...i, _a: (i.v / tot) * W * H }));
+      const tot = sec.stocks.reduce((s, i) => s + (i[sk] || i.v), 0);
+      const items = sec.stocks.map(i => ({ ...i, _a: ((i[sk] || i.v) / tot) * W * H }));
       squarify(items, 0, 0, W, H).forEach(stk => {
         const sw = stk.w - 1, sh = stk.h - 1;
         const se = buildStkEl({ ...stk, x: stk.x + .5, y: stk.y + .5 }, sw, sh, sec.name, maxAbsPct);
@@ -410,6 +424,8 @@ body{
       return;
     }
 
+    const sk = sizeMetric === 'mktcap' ? 'm' : 'v';  // size key per stock
+
     let sectors = JSON.parse(JSON.stringify(data.sectors));
 
     if (exclTSMC) {
@@ -419,38 +435,47 @@ body{
         return { ...sec, stocks, totalValue: tv,
           avgPct: tv > 0 ? stocks.reduce((s, i) => s + i.p * i.v, 0) / tv : 0 };
       }).filter(sec => sec.stocks.length > 0 && sec.totalValue > 0);
-      sectors.sort((a, b) => b.totalValue - a.totalValue);
     }
 
-    const totalV     = sectors.reduce((s, d) => s + d.totalValue, 0);
+    // Compute display size per sector (market cap or trade value)
+    sectors = sectors.map(sec => {
+      const totalSz = sec.stocks.reduce((s, i) => s + (i[sk] || i.v), 0);
+      const avgPct  = totalSz > 0
+        ? sec.stocks.reduce((s, i) => s + i.p * (i[sk] || i.v), 0) / totalSz
+        : sec.avgPct;
+      return { ...sec, _sz: totalSz, _avgPct: avgPct };
+    }).filter(s => s._sz > 0);
+    sectors.sort((a, b) => b._sz - a._sz);
+
+    const totalSz    = sectors.reduce((s, d) => s + d._sz, 0);
     const maxAbsPct  = Math.max(5, ...sectors.flatMap(sec => sec.stocks.map(s => Math.abs(s.p))));
     const W = stage.parentElement.clientWidth || 900;
     const H = Math.max(480, Math.round(W * 0.58));
     stage.style.width  = W + 'px';
     stage.style.height = H + 'px';
 
-    const secItems = sectors.map(d => ({ ...d, _a: (d.totalValue / totalV) * W * H }));
+    const secItems = sectors.map(d => ({ ...d, _a: (d._sz / totalSz) * W * H }));
     squarify(secItems, 0, 0, W, H).forEach(sec => {
       const el = document.createElement('div');
       el.className = 'sec';
       el.style.cssText = `left:${sec.x + GAP/2}px;top:${sec.y + GAP/2}px;width:${sec.w - GAP}px;height:${sec.h - GAP}px;background:#e0d9cc;border:1px solid rgba(0,0,0,.06)`;
 
       // Sector label (clickable)
-      const sign = sec.avgPct > 0 ? '+' : '';
-      const secColor = sec.avgPct > 0.3 ? '#b01818' : sec.avgPct < -0.3 ? '#0a6820' : '#9a8a70';
+      const sign = sec._avgPct > 0 ? '+' : '';
+      const secColor = sec._avgPct > 0.3 ? '#b01818' : sec._avgPct < -0.3 ? '#0a6820' : '#9a8a70';
       const lbl = document.createElement('div');
       lbl.className = 'sec-lbl';
       lbl.title = `點擊展開 ${sec.name}`;
       lbl.innerHTML = `<span class="sec-lbl-name">${sec.name}</span>
-        <span class="sec-lbl-pct" style="color:${secColor}">${sign}${sec.avgPct.toFixed(2)}%</span>
+        <span class="sec-lbl-pct" style="color:${secColor}">${sign}${sec._avgPct.toFixed(2)}%</span>
         <span class="sec-lbl-icon">↗</span>`;
-      lbl.addEventListener('click', () => openSectorModal(sec, maxAbsPct));
+      lbl.addEventListener('click', () => openSectorModal(sec, maxAbsPct, sk));
       el.appendChild(lbl);
 
       // Stocks treemap
       const iw = sec.w - GAP, ih = sec.h - GAP;
-      const st = sec.stocks.reduce((s, i) => s + i.v, 0);
-      const si = sec.stocks.map(i => ({ ...i, _a: (i.v / st) * iw * (ih - LBL_H) }));
+      const st = sec.stocks.reduce((s, i) => s + (i[sk] || i.v), 0);
+      const si = sec.stocks.map(i => ({ ...i, _a: ((i[sk] || i.v) / st) * iw * (ih - LBL_H) }));
       squarify(si, 0, LBL_H, iw, ih - LBL_H).forEach(stk => {
         const sw = stk.w - .8, sh = stk.h - .8;
         const se = buildStkEl(stk, sw, sh, sec.name, maxAbsPct);
@@ -460,7 +485,7 @@ body{
       stage.appendChild(el);
     });
 
-    // Update header
+    // Update header & legend
     const totalStocks = sectors.reduce((s, d) => s + d.stocks.length, 0);
     const fmt = d => d.replace(/(\d{4})(\d{2})(\d{2})/, '$1/$2/$3');
     const rangeText = data.fromDate === data.toDate
@@ -470,15 +495,27 @@ body{
     const shortfall  = periodDays - data.actualDays;
     const shortNote  = shortfall > 0 ? `　⚠️ 資料僅 ${data.actualDays} 天（還需 ${shortfall} 個交易日）` : '';
     const mktLabel   = { tse:'上市', otc:'上櫃', all:'上市＋上櫃' }[currentMarket];
+    const szLabel    = sizeMetric === 'mktcap' ? '市值' : '成交值';
 
     document.getElementById('hdr-sub').textContent =
       `${mktLabel}　${rangeText}　${totalStocks} 支　${sectors.length} 個產業${exclTSMC ? '（已排除台積電）' : ''}${shortNote}`;
     document.getElementById('stat-inline').textContent =
-      `總成交值 ${fv(totalV)}\n資料庫 ${CHART_DATA.totalDays} 個交易日`;
+      `總${szLabel} ${fv(totalSz)}\n資料庫 ${CHART_DATA.totalDays} 個交易日`;
     document.getElementById('updated-at').textContent = CHART_DATA.updatedAt || '—';
+    document.getElementById('size-note').textContent =
+      `區塊大小 = ${szLabel}　點擊產業標籤可展開`;
   }
 
   // ── event listeners ──────────────────────────────────
+  document.querySelectorAll('[data-size]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('[data-size]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      sizeMetric = btn.dataset.size;
+      render();
+    });
+  });
+
   document.querySelectorAll('[data-market]').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('[data-market]').forEach(b => b.classList.remove('active'));
