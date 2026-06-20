@@ -1,10 +1,6 @@
 #!/usr/bin/env python3
 """
-台股熱力圖資料抓取腳本
-- 每日盤後執行（建議 15:30 後）
-- 抓取 TWSE 上市股票日成交資料 + 產業分類
-- 最多保存 70 個交易日，超過自動刪除舊資料
-- 自動產生 data/chart_data.js 供 index.html 使用
+台股熱力圖資料抓取腳本（支援上市＋上櫃）
 """
 
 import urllib.request
@@ -36,8 +32,10 @@ def fetch(url):
         return json.loads(r.read())
 
 def parse_num(s):
+    if s is None:
+        return None
     try:
-        return float(str(s).replace(',', '').replace('+', ''))
+        return float(str(s).replace(',', '').replace('+', '').strip())
     except Exception:
         return None
 
@@ -65,17 +63,105 @@ def load_day(date_str):
     with open(path, encoding='utf-8') as f:
         return json.load(f)
 
-def compute_period(sorted_dates, n, all_data):
+def parse_tse_stocks(prices, code_to_ind):
+    trade_date = twse_date_to_ad(prices[0].get('Date', '')) if prices else None
+    stocks = []
+    for r in prices:
+        code = r.get('Code', '')
+        if not (code.isdigit() and len(code) == 4):
+            continue
+        close = parse_num(r.get('ClosingPrice'))
+        change = parse_num(r.get('Change'))
+        value = parse_num(r.get('TradeValue'))
+        if close is None or change is None or not value:
+            continue
+        prev = close - change
+        pct = round(change / prev * 100, 2) if prev else 0
+        ind_code = code_to_ind.get(code, '')
+        stocks.append({
+            'code': code, 'name': r.get('Name', ''),
+            'close': close, 'pct': pct,
+            'value': int(value),
+            'sector': INDUSTRY_NAMES.get(ind_code, '其他'),
+        })
+    return stocks, trade_date
+
+def get_field(r, *names):
+    for n in names:
+        v = r.get(n)
+        if v is not None and str(v).strip() not in ('', '--', '-'):
+            return str(v).strip()
+    return ''
+
+def parse_otc_stocks(data, code_to_ind):
+    if not data:
+        return [], None
+    records = data if isinstance(data, list) else []
+    if not records:
+        print("      [警告] OTC 資料格式異常，非陣列")
+        return [], None
+
+    print(f"      [OTC 欄位] {list(records[0].keys())[:10]}")
+
+    trade_date = None
+    stocks = []
+    for r in records:
+        code = get_field(r, 'SecuritiesCompanyCode', 'Code', 'stockCode', '公司代號')
+        if not (code.isdigit() and len(code) == 4):
+            continue
+        name = get_field(r, 'SecuritiesCompanyName', 'Name', '公司名稱')
+        close = parse_num(get_field(r, 'Close', 'ClosingPrice', '收盤'))
+        change = parse_num(get_field(r, 'Change', '漲跌'))
+        value = parse_num(get_field(r, 'TradeValue', '成交值'))
+
+        if not trade_date:
+            raw = get_field(r, 'Date', 'date', '日期')
+            trade_date = twse_date_to_ad(raw) if raw else None
+
+        if close is None or change is None or not value:
+            continue
+        prev = close - change
+        pct = round(change / prev * 100, 2) if prev else 0
+        ind_code = code_to_ind.get(code, '')
+        stocks.append({
+            'code': code, 'name': name,
+            'close': close, 'pct': pct,
+            'value': int(value),
+            'sector': INDUSTRY_NAMES.get(ind_code, '其他'),
+        })
+    return stocks, trade_date
+
+def get_stocks_for_market(day_data, market):
+    if not day_data:
+        return []
+    if market == 'all':
+        tse = day_data.get('tse', day_data.get('stocks', []))
+        otc = day_data.get('otc', [])
+        # 上市上櫃合併，code 不重複
+        seen = set()
+        result = []
+        for s in tse + otc:
+            if s['code'] not in seen:
+                seen.add(s['code'])
+                result.append(s)
+        return result
+    elif market == 'tse':
+        return day_data.get('tse', day_data.get('stocks', []))
+    elif market == 'otc':
+        return day_data.get('otc', [])
+    return []
+
+def compute_period(sorted_dates, n, all_data, market='tse'):
     use = sorted_dates[:n]
     if not use:
         return None
     latest_d, oldest_d = use[0], use[-1]
-    latest_stocks = {s['code']: s for s in all_data.get(latest_d, {}).get('stocks', [])}
-    oldest_stocks = {s['code']: s for s in all_data.get(oldest_d, {}).get('stocks', [])}
+    latest_stocks = {s['code']: s for s in get_stocks_for_market(all_data.get(latest_d), market)}
+    oldest_stocks = {s['code']: s for s in get_stocks_for_market(all_data.get(oldest_d), market)}
 
     code_value = defaultdict(int)
     for d in use:
-        for s in all_data.get(d, {}).get('stocks', []):
+        for s in get_stocks_for_market(all_data.get(d), market):
             code_value[s['code']] += s.get('value', 0)
 
     result = []
@@ -116,7 +202,8 @@ def compute_period(sorted_dates, n, all_data):
             'name': sec_name,
             'totalValue': sec_total,
             'avgPct': round(avg_pct, 2),
-            'stocks': [{'c': i['code'], 'n': i['name'], 'p': i['pct'], 'v': i['value']} for i in items],
+            'stocks': [{'c': i['code'], 'n': i['name'], 'p': i['pct'],
+                        'v': i['value'], 'cl': round(i['close'], 2)} for i in items],
         })
     sectors.sort(key=lambda x: x['totalValue'], reverse=True)
 
@@ -124,59 +211,61 @@ def compute_period(sorted_dates, n, all_data):
 
 def main():
     print("=" * 52)
-    print(f"  台股熱力圖資料抓取")
+    print(f"  台股熱力圖資料抓取（上市＋上櫃）")
     print(f"  {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 52)
 
-    # 1. 產業分類
-    print("\n[1/4] 抓取產業分類...")
+    # 1. 上市產業分類
+    print("\n[1/5] 抓取上市產業分類...")
     try:
-        basic = fetch("https://openapi.twse.com.tw/v1/opendata/t187ap03_L")
-        code_to_ind = {r['公司代號']: r['產業別'] for r in basic}
-        print(f"      {len(code_to_ind)} 支公司")
+        basic_tse = fetch("https://openapi.twse.com.tw/v1/opendata/t187ap03_L")
+        code_to_ind_tse = {r['公司代號']: r['產業別'] for r in basic_tse}
+        print(f"      {len(code_to_ind_tse)} 支上市公司")
     except Exception as e:
         print(f"      錯誤: {e}")
         sys.exit(1)
 
-    # 2. 今日行情
-    print("\n[2/4] 抓取今日行情...")
+    # 2. 上櫃產業分類
+    print("\n[2/5] 抓取上櫃產業分類...")
     try:
-        prices = fetch("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL")
+        basic_otc = fetch("https://openapi.twse.com.tw/v1/opendata/t187ap03_O")
+        code_to_ind_otc = {r['公司代號']: r['產業別'] for r in basic_otc}
+        print(f"      {len(code_to_ind_otc)} 支上櫃公司")
+    except Exception as e:
+        print(f"      上櫃分類失敗（繼續）: {e}")
+        code_to_ind_otc = {}
+
+    # 3. 上市行情
+    print("\n[3/5] 抓取上市行情...")
+    try:
+        tse_prices = fetch("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL")
+        tse_stocks, trade_date = parse_tse_stocks(tse_prices, code_to_ind_tse)
+        print(f"      {len(tse_stocks)} 支　交易日: {trade_date}")
     except Exception as e:
         print(f"      錯誤: {e}")
         sys.exit(1)
 
-    trade_date = twse_date_to_ad(prices[0].get('Date', '')) or datetime.date.today().strftime('%Y%m%d')
-    print(f"      交易日: {trade_date}")
+    # 4. 上櫃行情
+    print("\n[4/5] 抓取上櫃行情...")
+    otc_stocks = []
+    try:
+        otc_raw = fetch("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes")
+        otc_stocks, otc_date = parse_otc_stocks(otc_raw, code_to_ind_otc)
+        print(f"      {len(otc_stocks)} 支　交易日: {otc_date}")
+        if not trade_date and otc_date:
+            trade_date = otc_date
+    except Exception as e:
+        print(f"      上櫃行情失敗（繼續執行）: {e}")
 
-    stocks = []
-    for r in prices:
-        code = r.get('Code', '')
-        if not (code.isdigit() and len(code) == 4):
-            continue
-        close = parse_num(r.get('ClosingPrice'))
-        change = parse_num(r.get('Change'))
-        value = parse_num(r.get('TradeValue'))
-        if close is None or change is None or not value:
-            continue
-        prev = close - change
-        pct = round(change / prev * 100, 2) if prev else 0
-        ind_code = code_to_ind.get(code, '')
-        stocks.append({
-            'code': code, 'name': r['Name'],
-            'close': close, 'change': change, 'pct': pct,
-            'value': int(value),
-            'sector': INDUSTRY_NAMES.get(ind_code, '其他'),
-            'sectorCode': ind_code,
-        })
-    print(f"      {len(stocks)} 支有效股票")
+    if not trade_date:
+        trade_date = datetime.date.today().strftime('%Y%m%d')
 
-    # 3. 儲存快照 + 更新 manifest
-    print(f"\n[3/4] 儲存資料...")
+    # 5. 儲存 & 計算
+    print(f"\n[5/5] 儲存資料與計算熱力圖...")
     out_path = os.path.join(DATA_DIR, f"{trade_date}.json")
     with open(out_path, 'w', encoding='utf-8') as f:
-        json.dump({'date': trade_date, 'stocks': stocks}, f, ensure_ascii=False)
-    print(f"      儲存: {trade_date}.json")
+        json.dump({'date': trade_date, 'tse': tse_stocks, 'otc': otc_stocks}, f, ensure_ascii=False)
+    print(f"      {trade_date}.json (TSE:{len(tse_stocks)} OTC:{len(otc_stocks)})")
 
     manifest = load_manifest()
     if trade_date not in manifest['dates']:
@@ -188,15 +277,13 @@ def main():
             old_file = os.path.join(DATA_DIR, f"{old_d}.json")
             if os.path.exists(old_file):
                 os.remove(old_file)
-                print(f"      刪除舊資料: {old_d}.json")
+                print(f"      刪除: {old_d}.json")
         manifest['dates'] = manifest['dates'][:MAX_DAYS]
 
     save_manifest(manifest)
-    print(f"      資料庫: {len(manifest['dates'])} 個交易日 (最多 {MAX_DAYS} 天)")
+    print(f"      資料庫: {len(manifest['dates'])} 個交易日（最多 {MAX_DAYS} 天）")
 
-    # 4. 計算各週期並產生 chart_data.js
-    print(f"\n[4/4] 計算熱力圖資料...")
-    needed = manifest['dates'][:61]  # 最多需要 60 個交易日
+    needed = manifest['dates'][:61]
     all_data = {d: load_day(d) for d in needed if load_day(d)}
     avail = sorted(all_data.keys(), reverse=True)
     print(f"      可用天數: {len(avail)}")
@@ -204,10 +291,14 @@ def main():
     chart = {}
     for n in [1, 3, 5, 20, 60]:
         key = f'{n}d'
-        res = compute_period(avail, n, all_data)
-        if res:
-            chart[key] = res
-            print(f"      {n}日: {res['fromDate']} ~ {res['toDate']} ({res['actualDays']}天) {len(res['sectors'])}個產業")
+        chart[key] = {}
+        for market in ['tse', 'otc', 'all']:
+            res = compute_period(avail, n, all_data, market)
+            if res:
+                chart[key][market] = res
+        tse_r = chart[key].get('tse', {})
+        otc_r = chart[key].get('otc', {})
+        print(f"      {n}日 TSE:{len(tse_r.get('sectors',[]))}個產業  OTC:{len(otc_r.get('sectors',[]))}個產業")
 
     chart['updatedAt'] = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
     chart['totalDays'] = len(manifest['dates'])
