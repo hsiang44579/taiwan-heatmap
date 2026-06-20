@@ -1,0 +1,39 @@
+name: 每日更新台股資料
+
+on:
+  schedule:
+    # UTC 07:35 = 台灣時間 15:35（週一至週五，盤後）
+    - cron: '35 7 * * 1-5'
+  workflow_dispatch:
+    # 允許手動在 GitHub 網頁觸發
+
+permissions:
+  contents: write   # 允許 workflow 推送資料回 repo
+
+jobs:
+  fetch-and-update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 需要完整歷史才能正確 push
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 抓取台股資料
+        run: python3 fetch_data.py
+
+      - name: 提交並推送資料
+        run: |
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add data/
+          # 有變動才 commit，避免空 commit
+          git diff --staged --quiet || git commit -m "每日更新 $(date -u +'%Y-%m-%d')"
+          git push

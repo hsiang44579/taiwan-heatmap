@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>台股熱力圖</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+body{
+  background:#f5f0e6;
+  color:#2c2415;
+  font-family:"Noto Sans TC","PingFang TC","Microsoft JhengHei",system-ui,sans-serif;
+  min-height:100vh;
+  padding:20px 16px 36px;
+}
+#app{max-width:1280px;margin:0 auto}
+
+/* Header */
+.hdr{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  flex-wrap:wrap;
+  gap:10px;
+  padding-bottom:14px;
+  border-bottom:1px solid #d4c9b0;
+  margin-bottom:14px;
+}
+.hdr-title{font-size:20px;font-weight:600;letter-spacing:-.01em;color:#1a1208}
+.hdr-sub{font-size:12px;color:#9a8a70;margin-top:4px;line-height:1.6}
+.hdr-stat{font-size:12px;color:#9a8a70;text-align:right;line-height:1.8;white-space:nowrap}
+
+/* Controls */
+.ctrl-bar{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  flex-wrap:wrap;
+  background:#ede7d9;
+  border:1px solid #d4c9b0;
+  border-radius:10px;
+  padding:9px 14px;
+  margin-bottom:12px;
+}
+.ctrl-group{display:flex;align-items:center;gap:5px}
+.ctrl-label{font-size:12px;color:#9a8a70;white-space:nowrap}
+.period-btn{
+  padding:4px 13px;
+  border-radius:6px;
+  border:1px solid #ccc4b0;
+  background:transparent;
+  color:#7a6a52;
+  font-size:13px;
+  cursor:pointer;
+  transition:all .12s;
+  font-family:inherit;
+}
+.period-btn:hover{border-color:#9a8a70;color:#3a2a10}
+.period-btn.active{
+  background:#2f1d08;
+  border-color:#2f1d08;
+  color:#f5f0e6;
+  font-weight:500;
+}
+.divider{width:1px;height:22px;background:#ccc4b0;flex-shrink:0}
+.chk-wrap{
+  display:flex;
+  align-items:center;
+  gap:7px;
+  cursor:pointer;
+  font-size:13px;
+  color:#7a6a52;
+  user-select:none;
+}
+.chk-wrap input{width:14px;height:14px;accent-color:#2f1d08;cursor:pointer}
+.chk-wrap:hover{color:#3a2a10}
+
+/* Legend */
+.legend{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  font-size:11px;
+  color:#9a8a70;
+  margin-bottom:10px;
+  padding:0 2px;
+}
+.legend-bar{display:flex;gap:1px}
+.legend-bar span{display:inline-block;width:20px;height:9px;border-radius:1px}
+.legend-gradient{
+  flex:1;
+  height:1px;
+  background:linear-gradient(to right,#05531a,#1da83a,#b0ddb8,#c8bc9a,#e8a8a8,#e05050,#850d0d);
+  min-width:60px;
+  border-radius:2px;
+}
+.legend-note{color:#b0a490;margin-left:8px}
+
+/* Heatmap stage */
+#hm-wrap{
+  position:relative;
+  width:100%;
+  background:#ddd5c2;
+  border-radius:10px;
+  overflow:hidden;
+  border:1px solid #cec5b0;
+}
+#hm-stage{position:relative}
+
+/* Sector block */
+.sec{position:absolute;overflow:hidden;border-radius:3px}
+.sec-lbl{
+  position:absolute;
+  top:0;left:0;right:0;
+  z-index:2;
+  pointer-events:none;
+  padding:3px 6px;
+  font-size:11px;
+  font-weight:600;
+  color:#1a1208;
+  background:rgba(245,240,230,.90);
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  letter-spacing:.02em;
+  border-bottom:1px solid rgba(0,0,0,.07);
+}
+.sec-lbl .sec-pct{font-weight:500;margin-left:4px;font-size:10px}
+
+/* Stock block */
+.stk{
+  position:absolute;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  overflow:hidden;
+  cursor:pointer;
+  border-radius:2px;
+  transition:filter .1s;
+}
+.stk:hover{filter:brightness(1.12);z-index:10}
+.stk-code{display:block;font-weight:600;line-height:1.25;text-align:center}
+.stk-name{display:block;line-height:1.2;text-align:center;opacity:.82}
+.stk-pct{display:block;font-weight:600;line-height:1.3;text-align:center}
+
+/* Tooltip */
+#tt{
+  position:fixed;
+  background:#fdf9f3;
+  border:1px solid #cec5b0;
+  border-radius:10px;
+  padding:12px 16px;
+  font-size:12px;
+  pointer-events:none;
+  display:none;
+  z-index:999;
+  min-width:170px;
+  box-shadow:0 4px 16px rgba(60,40,10,.12);
+}
+#tt .tt-h{font-size:14px;font-weight:600;color:#1a1208;margin-bottom:8px}
+#tt .tt-r{display:flex;justify-content:space-between;gap:20px;color:#9a8a70;padding:2px 0}
+#tt .tt-v{color:#2c2415;font-weight:500}
+#tt .tt-pct-up{color:#c01c1c;font-weight:600}
+#tt .tt-pct-dn{color:#0d7a28;font-weight:600}
+#tt .tt-pct-flat{color:#9a8a70;font-weight:500}
+
+/* Placeholder */
+.placeholder{
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  height:400px;
+  gap:12px;
+  color:#9a8a70;
+  font-size:14px;
+}
+.placeholder code{
+  background:#ede7d9;
+  border:1px solid #ccc4b0;
+  border-radius:6px;
+  padding:6px 14px;
+  font-size:13px;
+  color:#5a4228;
+  font-family:monospace;
+}
+
+/* Footer */
+.footer{
+  margin-top:16px;
+  font-size:11px;
+  color:#b0a490;
+  text-align:center;
+  line-height:1.9;
+}
+.footer a{color:#7a6a52;text-decoration:none}
+.footer a:hover{color:#3a2a10}
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="hdr">
+    <div>
+      <div class="hdr-title">台股上市熱力圖</div>
+      <div class="hdr-sub" id="hdr-sub">載入中…</div>
+    </div>
+    <div class="hdr-stat" id="stat-inline">—</div>
+  </div>
+
+  <div class="ctrl-bar">
+    <span class="ctrl-label">週期</span>
+    <div class="ctrl-group">
+      <button class="period-btn active" data-period="1d">當日</button>
+      <button class="period-btn" data-period="3d">3 日</button>
+      <button class="period-btn" data-period="5d">5 日</button>
+      <button class="period-btn" data-period="20d">20 日</button>
+      <button class="period-btn" data-period="60d">60 日</button>
+    </div>
+    <div class="divider"></div>
+    <label class="chk-wrap">
+      <input type="checkbox" id="excl-tsmc"> 排除台積電 (2330)
+    </label>
+  </div>
+
+  <div class="legend">
+    <div class="legend-bar">
+      <span style="background:#05531a"></span>
+      <span style="background:#0d7a28"></span>
+      <span style="background:#1da83a"></span>
+      <span style="background:#64c87a"></span>
+      <span style="background:#b0ddb8"></span>
+      <span style="background:#c8bc9a"></span>
+      <span style="background:#e8a8a8"></span>
+      <span style="background:#e05050"></span>
+      <span style="background:#c01c1c"></span>
+      <span style="background:#850d0d"></span>
+    </div>
+    <span>跌多</span>
+    <div class="legend-gradient"></div>
+    <span>漲多</span>
+    <span class="legend-note">區塊大小 = 成交值（億）</span>
+  </div>
+
+  <div id="hm-wrap">
+    <div id="hm-stage"></div>
+  </div>
+
+  <div class="footer">
+    資料來源：<a href="https://openapi.twse.com.tw" target="_blank">台灣證券交易所 TWSE OpenAPI</a>
+    &nbsp;·&nbsp; 區塊大小 = 成交值 &nbsp;·&nbsp; 顏色 = 漲跌幅（台股慣例：紅漲綠跌）
+    &nbsp;·&nbsp; 更新：<span id="updated-at">—</span>
+  </div>
+</div>
+
+<div id="tt">
+  <div class="tt-h" id="tt-h"></div>
+  <div class="tt-r"><span>代號</span><span class="tt-v" id="tt-c"></span></div>
+  <div class="tt-r"><span>收盤</span><span class="tt-v" id="tt-cl"></span></div>
+  <div class="tt-r"><span id="tt-period-lbl">漲跌幅</span><span id="tt-p"></span></div>
+  <div class="tt-r"><span id="tt-period-v-lbl">成交值</span><span class="tt-v" id="tt-v"></span></div>
+  <div class="tt-r"><span>產業</span><span class="tt-v" id="tt-s"></span></div>
+</div>
+
+<script src="data/chart_data.js"></script>
+<script>
+(function () {
+  const stage = document.getElementById('hm-stage');
+  const tt = document.getElementById('tt');
+  let currentPeriod = '1d';
+  let exclTSMC = false;
+  const GAP = 2;
+  const LBL_H = 18;
+
+  function fv(v) {
+    if (v >= 1e8) return (v / 1e8).toFixed(1) + '億';
+    if (v >= 1e4) return (v / 1e4).toFixed(0) + '萬';
+    return v + '';
+  }
+
+  function stockColor(p, maxPct) {
+    const scale = Math.max(3, maxPct);
+    const t = Math.max(-1, Math.min(1, p / scale));
+    if (t > 0) {
+      if (t < 0.2) return { bg: '#5a1515', tx: '#ffb0b0' };
+      if (t < 0.4) return { bg: '#8b1a1a', tx: '#ffc8c8' };
+      if (t < 0.6) return { bg: '#c01c1c', tx: '#fff' };
+      if (t < 0.8) return { bg: '#e03535', tx: '#fff' };
+      return { bg: '#f05050', tx: '#fff' };
+    } else if (t < 0) {
+      const a = Math.abs(t);
+      if (a < 0.2) return { bg: '#0d2e14', tx: '#80d890' };
+      if (a < 0.4) return { bg: '#0a5020', tx: '#a0e0a8' };
+      if (a < 0.6) return { bg: '#0d7a28', tx: '#fff' };
+      if (a < 0.8) return { bg: '#1da83a', tx: '#fff' };
+      return { bg: '#28c845', tx: '#fff' };
+    }
+    return { bg: '#b5a888', tx: '#3a2a10' };
+  }
+
+  function squarify(items, x, y, w, h) {
+    if (!items.length) return [];
+    const tot = items.reduce((s, d) => s + d._a, 0);
+    const res = [];
+    let rem = [...items], rx = x, ry = y, rw = w, rh = h, rt = tot;
+    while (rem.length) {
+      const wide = rw >= rh;
+      let row = [], rs = 0, bw = Infinity;
+      for (let i = 0; i < rem.length; i++) {
+        row.push(rem[i]); rs += rem[i]._a;
+        const rl = (wide ? rw : rh) * (rs / rt);
+        let worst = 0;
+        for (const r of row) {
+          const f = r._a / rs;
+          const cw = f * (wide ? rh : rw);
+          worst = Math.max(worst, Math.max(rl / cw, cw / rl));
+        }
+        if (worst > bw) { row.pop(); break; }
+        bw = worst;
+      }
+      const rs2 = row.reduce((s, d) => s + d._a, 0);
+      const rl = (wide ? rw : rh) * (rs2 / rt);
+      let cx = rx, cy = ry;
+      for (const item of row) {
+        const f = item._a / rs2;
+        const cw = wide ? rl : rw * f, ch = wide ? rh * f : rl;
+        res.push({ ...item, x: cx, y: cy, w: cw, h: ch });
+        if (wide) cy += ch; else cx += cw;
+      }
+      if (wide) { rx += rl; rw -= rl; } else { ry += rl; rh -= rl; }
+      rem = rem.filter(d => !row.includes(d)); rt -= rs2;
+    }
+    return res;
+  }
+
+  function render() {
+    stage.innerHTML = '';
+    if (typeof CHART_DATA === 'undefined') {
+      stage.innerHTML = `<div class="placeholder">
+        <div>找不到資料檔案</div>
+        <div>請先執行：</div>
+        <code>python3 fetch_data.py</code>
+      </div>`;
+      document.getElementById('hdr-sub').textContent = '尚無資料';
+      return;
+    }
+
+    const data = CHART_DATA[currentPeriod];
+    if (!data) {
+      stage.innerHTML = `<div class="placeholder">
+        <div>${currentPeriod} 資料不足（需要更多天的歷史資料）</div>
+        <code>python3 fetch_data.py</code>
+      </div>`;
+      return;
+    }
+
+    let sectors = JSON.parse(JSON.stringify(data.sectors));
+
+    if (exclTSMC) {
+      sectors = sectors.map(sec => ({
+        ...sec,
+        stocks: sec.stocks.filter(s => s.c !== '2330'),
+        totalValue: sec.stocks.filter(s => s.c !== '2330').reduce((sum, s) => sum + s.v, 0),
+      })).filter(sec => sec.stocks.length > 0 && sec.totalValue > 0);
+      sectors.forEach(sec => {
+        const tv = sec.totalValue;
+        sec.avgPct = tv > 0 ? sec.stocks.reduce((s, i) => s + i.p * i.v, 0) / tv : 0;
+      });
+      sectors.sort((a, b) => b.totalValue - a.totalValue);
+    }
+
+    const totalV = sectors.reduce((s, d) => s + d.totalValue, 0);
+    const maxAbsPct = Math.max(5, ...sectors.flatMap(sec => sec.stocks.map(s => Math.abs(s.p))));
+
+    const W = stage.parentElement.clientWidth || 900;
+    const H = Math.max(480, Math.round(W * 0.58));
+    stage.style.width = W + 'px';
+    stage.style.height = H + 'px';
+
+    const secItems = sectors.map(d => ({ ...d, _a: (d.totalValue / totalV) * W * H }));
+    const secCells = squarify(secItems, 0, 0, W, H);
+
+    const periodLabel = { '1d': '當日', '3d': '近3日', '5d': '近5日', '20d': '近20日', '60d': '近60日' }[currentPeriod] || currentPeriod;
+    const periodDays = { '1d': 1, '3d': 3, '5d': 5, '20d': 20, '60d': 60 }[currentPeriod] || 1;
+
+    secCells.forEach(sec => {
+      const el = document.createElement('div');
+      el.className = 'sec';
+      el.style.cssText = `left:${sec.x + GAP / 2}px;top:${sec.y + GAP / 2}px;width:${sec.w - GAP}px;height:${sec.h - GAP}px;background:#e0d9cc;border:1px solid rgba(0,0,0,.06)`;
+
+      const sign = sec.avgPct > 0 ? '+' : '';
+      const lbl = document.createElement('div');
+      lbl.className = 'sec-lbl';
+      const secPctColor = sec.avgPct > 0.3 ? '#b01818' : sec.avgPct < -0.3 ? '#0a6820' : '#9a8a70';
+      lbl.innerHTML = `${sec.name}<span class="sec-pct" style="color:${secPctColor}">${sign}${sec.avgPct.toFixed(2)}%</span>`;
+      el.appendChild(lbl);
+
+      const iw = sec.w - GAP, ih = sec.h - GAP;
+      const st = sec.stocks.reduce((s, i) => s + i.v, 0);
+      const si = sec.stocks.map(i => ({ ...i, _a: (i.v / st) * iw * (ih - LBL_H) }));
+      const sc = squarify(si, 0, LBL_H, iw, ih - LBL_H);
+
+      sc.forEach(stk => {
+        const { bg, tx } = stockColor(stk.p, maxAbsPct);
+        const se = document.createElement('div');
+        se.className = 'stk';
+        const sw = stk.w - 0.8, sh = stk.h - 0.8;
+        se.style.cssText = `left:${stk.x + 0.4}px;top:${stk.y + 0.4}px;width:${sw}px;height:${sh}px;background:${bg};color:${tx}`;
+
+        let html = '';
+        const fs1 = Math.min(12, Math.max(8, sw / 4.5));
+        const fs2 = Math.min(10, Math.max(7, sw / 5.5));
+        if (sw > 24 && sh > 14) html += `<span class="stk-code" style="font-size:${fs1}px">${stk.c}</span>`;
+        if (sw > 36 && sh > 28) html += `<span class="stk-name" style="font-size:${fs2}px">${stk.n}</span>`;
+        if (sw > 22 && sh > 9) {
+          const s = stk.p > 0 ? '+' : '';
+          html += `<span class="stk-pct" style="font-size:${fs1}px">${s}${stk.p.toFixed(2)}%</span>`;
+        }
+        se.innerHTML = html;
+
+        se.addEventListener('mouseenter', () => {
+          document.getElementById('tt-h').textContent = stk.n;
+          document.getElementById('tt-c').textContent = stk.c;
+          document.getElementById('tt-cl').textContent = stk.close ? stk.close.toFixed(1) : '—';
+          document.getElementById('tt-period-lbl').textContent = periodLabel + '漲跌';
+          document.getElementById('tt-period-v-lbl').textContent = periodLabel + '成交值';
+          const tp = document.getElementById('tt-p');
+          const s = stk.p > 0 ? '+' : '';
+          tp.textContent = `${s}${stk.p.toFixed(2)}%`;
+          tp.className = stk.p > 0.1 ? 'tt-pct-up' : stk.p < -0.1 ? 'tt-pct-dn' : 'tt-pct-flat';
+          document.getElementById('tt-v').textContent = fv(stk.v);
+          document.getElementById('tt-s').textContent = sec.name;
+          tt.style.display = 'block';
+        });
+        se.addEventListener('mousemove', e => {
+          const tx = Math.min(e.clientX + 16, window.innerWidth - 200);
+          const ty = Math.min(e.clientY - 10, window.innerHeight - 160);
+          tt.style.left = tx + 'px';
+          tt.style.top = ty + 'px';
+        });
+        se.addEventListener('mouseleave', () => tt.style.display = 'none');
+        el.appendChild(se);
+      });
+
+      stage.appendChild(el);
+    });
+
+    const totalStocks = sectors.reduce((s, d) => s + d.stocks.length, 0);
+    const rangeText = data.fromDate === data.toDate
+      ? data.toDate.replace(/(\d{4})(\d{2})(\d{2})/, '$1/$2/$3')
+      : `${data.fromDate.replace(/(\d{4})(\d{2})(\d{2})/, '$1/$2/$3')} – ${data.toDate.replace(/(\d{4})(\d{2})(\d{2})/, '$1/$2/$3')}`;
+
+    const shortfall = periodDays - data.actualDays;
+    const shortfallNote = shortfall > 0
+      ? `　⚠️ 資料僅 ${data.actualDays} 天（還需累積 ${shortfall} 個交易日）`
+      : '';
+    document.getElementById('hdr-sub').textContent =
+      `${rangeText}　${totalStocks} 支股票　${sectors.length} 個產業${exclTSMC ? '　(已排除台積電)' : ''}${shortfallNote}`;
+    document.getElementById('stat-inline').textContent =
+      `總成交值 ${fv(totalV)}\n資料庫 ${CHART_DATA.totalDays} 個交易日`;
+    document.getElementById('updated-at').textContent = CHART_DATA.updatedAt || '—';
+  }
+
+  document.querySelectorAll('.period-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      currentPeriod = btn.dataset.period;
+      render();
+    });
+  });
+
+  document.getElementById('excl-tsmc').addEventListener('change', e => {
+    exclTSMC = e.target.checked;
+    render();
+  });
+
+  let resizeTimer;
+  window.addEventListener('resize', () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(render, 250);
+  });
+
+  if (typeof CHART_DATA === 'undefined') {
+    stage.innerHTML = `<div class="placeholder">
+      <div style="font-size:16px;color:#7a6a52">尚無資料</div>
+      <div>請先執行以下指令抓取資料：</div>
+      <code>python3 fetch_data.py</code>
+      <div style="font-size:11px;color:#b0a490;margin-top:4px">之後重新開啟此頁面即可看到熱力圖</div>
+    </div>`;
+    document.getElementById('hdr-sub').textContent = '請先執行 fetch_data.py';
+  } else {
+    render();
+  }
+})();
+</script>
+</body>
+</html>
