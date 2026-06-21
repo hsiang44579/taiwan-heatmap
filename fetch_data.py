@@ -215,6 +215,7 @@ def compute_period(sorted_dates, n, all_data, market='tse'):
             'close': close_now,
             'pct': pct,
             'value': total_val,
+            'mktcap': latest.get('mktcap', 0),
             'sector': latest.get('sector', '其他'),
         })
 
