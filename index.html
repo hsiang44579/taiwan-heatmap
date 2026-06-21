@@ -52,11 +52,11 @@ body{
 /* Legend */
 .legend{
   display:flex;align-items:center;gap:8px;font-size:11px;
-  color:#9a8a70;margin-bottom:10px;padding:0 2px;
+  color:#9a8a70;margin-bottom:10px;padding:0 2px;flex-wrap:nowrap;
 }
 .legend-bar{display:flex;gap:1px}
 .legend-bar span{display:inline-block;width:20px;height:9px;border-radius:1px}
-.legend-note{color:#b0a490;margin-left:8px}
+.legend-note{color:#b0a490;margin-left:8px;white-space:nowrap}
 
 /* Heatmap */
 #hm-wrap{
@@ -157,6 +157,20 @@ body{
 .footer{margin-top:16px;font-size:11px;color:#b0a490;text-align:center;line-height:1.9}
 .footer a{color:#7a6a52;text-decoration:none}
 .footer a:hover{color:#3a2a10}
+
+/* Intraday badge */
+#intraday-badge{
+  display:none;align-items:center;gap:4px;flex-shrink:0;white-space:nowrap;
+  font-size:11px;font-weight:600;color:#c01c1c;
+  background:rgba(192,28,28,.08);border:1px solid rgba(192,28,28,.3);
+  border-radius:10px;padding:1px 8px;cursor:pointer;
+  animation:pulse-border 2s ease-in-out infinite;
+}
+#intraday-badge:hover{background:rgba(192,28,28,.15)}
+@keyframes pulse-border{0%,100%{border-color:rgba(192,28,28,.3)}50%{border-color:rgba(192,28,28,.7)}}
+.intraday-dot{width:5px;height:5px;border-radius:50%;background:#c01c1c;flex-shrink:0;
+  animation:pulse-dot 1.4s ease-in-out infinite}
+@keyframes pulse-dot{0%,100%{opacity:1}50%{opacity:.3}}
 </style>
 </head>
 <body>
@@ -166,7 +180,13 @@ body{
       <div class="hdr-title">台股熱力圖</div>
       <div class="hdr-sub" id="hdr-sub">載入中…</div>
     </div>
-    <div class="hdr-stat" id="stat-inline">—</div>
+    <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px">
+      <div class="hdr-stat" id="stat-inline">—</div>
+      <span id="intraday-badge" title="點擊手動刷新">
+        <span class="intraday-dot"></span>
+        盤中即時&nbsp;<span id="intraday-time">--:--:--</span>
+      </span>
+    </div>
   </div>
 
   <div class="ctrl-bar">
@@ -529,6 +549,22 @@ body{
 
     let sectors = JSON.parse(JSON.stringify(data.sectors));
 
+    // 盤中即時：1d 週期時以即時資料覆蓋 p / v
+    if (intradayData && currentPeriod === '1d') {
+      sectors = sectors.map(sec => {
+        const stocks = sec.stocks.map(stk => {
+          const id = intradayData[stk.c];
+          if (!id) return stk;
+          return { ...stk, p: id.p, v: id.v > 0 ? id.v : stk.v };
+        });
+        const tv = stocks.reduce((s, i) => s + (i.v || 0), 0);
+        const avgPct = tv > 0
+          ? stocks.reduce((s, i) => s + i.p * (i.v || 0), 0) / tv
+          : sec.avgPct;
+        return { ...sec, stocks, totalValue: tv, avgPct };
+      });
+    }
+
     if (exclTSMC) {
       sectors = sectors.map(sec => {
         const stocks = sec.stocks.filter(s => s.c !== '2330');
@@ -598,8 +634,9 @@ body{
     const mktLabel   = { tse:'上市', otc:'上櫃', all:'上市＋上櫃' }[currentMarket];
     const szLabel    = sizeMetric === 'mktcap' ? '市值' : '成交值';
 
+    const intradayNote = (intradayData && currentPeriod === '1d') ? '　🟢 盤中即時' : '';
     document.getElementById('hdr-sub').textContent =
-      `${mktLabel}　${rangeText}　${totalStocks} 支　${sectors.length} 個產業${exclTSMC ? '（已排除台積電）' : ''}${shortNote}`;
+      `${mktLabel}　${rangeText}　${totalStocks} 支　${sectors.length} 個產業${exclTSMC ? '（已排除台積電）' : ''}${shortNote}${intradayNote}`;
     document.getElementById('stat-inline').textContent =
       `總${szLabel} ${fv(totalSz)}\n資料庫 ${CHART_DATA.totalDays} 個交易日`;
     document.getElementById('updated-at').textContent = CHART_DATA.updatedAt || '—';
@@ -646,6 +683,105 @@ body{
     resizeTimer = setTimeout(render, 250);
   });
 
+  // ── Intraday realtime mode ───────────────────────────
+  let intradayData   = null;  // { code: { p, v, z } }
+  let intradayTimer  = null;
+
+  function twNow() {
+    // 回傳台灣時間的 Date（UTC+8）
+    return new Date(Date.now() + 8 * 3600000);
+  }
+
+  function isMarketOpen() {
+    const d = twNow();
+    const day = d.getUTCDay();        // 0=Sun 6=Sat
+    if (day === 0 || day === 6) return false;
+    const mins = d.getUTCHours() * 60 + d.getUTCMinutes();
+    return mins >= 540 && mins < 810; // 09:00–13:30
+  }
+
+  function allStockCodes() {
+    // 從 CHART_DATA 1d 取出所有 {code, market} 清單
+    if (typeof CHART_DATA === 'undefined') return { tse: [], otc: [] };
+    const pd = CHART_DATA['1d'];
+    if (!pd) return { tse: [], otc: [] };
+    const tse = [], otc = [];
+    ['tse', 'otc'].forEach(mkt => {
+      const d = pd[mkt];
+      if (!d || !d.sectors) return;
+      d.sectors.forEach(sec => sec.stocks.forEach(s => {
+        (mkt === 'tse' ? tse : otc).push(s.c);
+      }));
+    });
+    return { tse, otc };
+  }
+
+  async function fetchBatch(codes, market) {
+    // TWSE mis API 支援 tse_xxxx.tw 和 otc_xxxx.tw 混合查詢
+    const exCh = codes.map(c => `${market}_${c}.tw`).join('%7C'); // URL-encode |
+    const url = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${exCh}&json=1&delay=0&_=${Date.now()}`;
+    const r = await fetch(url, { cache: 'no-store' });
+    const json = await r.json();
+    return json.msgArray || [];
+  }
+
+  async function fetchAllIntraday() {
+    try {
+      const { tse, otc } = allStockCodes();
+      const BATCH = 150;
+      const map = {};
+
+      async function processBatches(codes, market) {
+        for (let i = 0; i < codes.length; i += BATCH) {
+          const items = await fetchBatch(codes.slice(i, i + BATCH), market);
+          items.forEach(item => {
+            const z = parseFloat(item.z);   // 現價
+            const y = parseFloat(item.y);   // 昨收
+            const tv = parseFloat(item.tv); // 累計成交量（張）
+            if (!isFinite(z) || !isFinite(y) || y === 0 || !isFinite(tv)) return;
+            map[item.c] = {
+              p: (z - y) / y * 100,  // 漲跌幅 %
+              v: tv * z * 1000,      // 估算累計成交值（NTD）
+              z                      // 現價
+            };
+          });
+        }
+      }
+
+      await processBatches(tse, 'tse');
+      await processBatches(otc, 'otc');
+
+      intradayData = map;
+
+      // 更新時間戳
+      const d = twNow();
+      const ts = [d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds()]
+        .map(n => String(n).padStart(2, '0')).join(':');
+      document.getElementById('intraday-time').textContent = ts;
+
+      render();
+    } catch (e) {
+      console.warn('盤中資料更新失敗:', e);
+    }
+  }
+
+  function startIntraday() {
+    if (intradayTimer) return; // 已在執行
+    document.getElementById('intraday-badge').style.display = 'inline-flex';
+    fetchAllIntraday();
+    intradayTimer = setInterval(fetchAllIntraday, 60000);
+  }
+
+  function stopIntraday() {
+    clearInterval(intradayTimer);
+    intradayTimer = null;
+    intradayData = null;
+    document.getElementById('intraday-badge').style.display = 'none';
+  }
+
+  // 手動刷新按鈕
+  document.getElementById('intraday-badge').addEventListener('click', fetchAllIntraday);
+
   // ── init ────────────────────────────────────────────
   if (typeof CHART_DATA === 'undefined') {
     stage.innerHTML = `<div class="placeholder">
@@ -657,6 +793,15 @@ body{
     document.getElementById('hdr-sub').textContent = '請先執行 fetch_data.py';
   } else {
     render();
+    // 若盤中時間自動啟動即時模式
+    if (isMarketOpen()) {
+      startIntraday();
+    }
+    // 每分鐘檢查是否進入/離開盤中時間
+    setInterval(() => {
+      if (isMarketOpen() && !intradayTimer) startIntraday();
+      if (!isMarketOpen() && intradayTimer) stopIntraday();
+    }, 60000);
   }
 })();
 </script>
