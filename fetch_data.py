@@ -90,7 +90,7 @@ def parse_tse_stocks(prices, code_to_ind, capital_map=None):
     stocks = []
     for r in prices:
         code = r.get('Code', '')
-        if not (code.isdigit() and len(code) == 4):
+        if not (code.isdigit() and len(code) == 4) or code.startswith('00'):
             continue
         close = parse_num(r.get('ClosingPrice'))
         change = parse_num(r.get('Change'))
@@ -131,7 +131,7 @@ def parse_otc_stocks(data, code_to_ind, capital_map=None):
     stocks = []
     for r in records:
         code = get_field(r, 'SecuritiesCompanyCode', 'Code', 'stockCode', '公司代號')
-        if not (code.isdigit() and len(code) == 4):
+        if not (code.isdigit() and len(code) == 4) or code.startswith('00'):
             continue
         name = get_field(r, 'CompanyName', 'SecuritiesCompanyName', 'Name', '公司名稱')
         close = parse_num(get_field(r, 'Close', 'ClosingPrice', '收盤'))
