@@ -131,6 +131,18 @@ body{
 .modal-close:hover{color:#1a1208;border-color:#9a8a70}
 .modal-body{flex:1;position:relative;background:#ddd5c2;overflow:hidden}
 
+/* Sub-sector labels inside modal */
+.modal-sub-lbl{
+  position:absolute;top:0;left:0;right:0;height:17px;z-index:2;
+  display:flex;align-items:center;gap:5px;
+  padding:0 6px;font-size:10px;font-weight:600;
+  color:#1a1208;background:rgba(245,240,230,.93);
+  white-space:nowrap;overflow:hidden;
+  border-bottom:1px solid rgba(0,0,0,.06);letter-spacing:.01em;
+}
+.modal-sub-name{flex:1;overflow:hidden;text-overflow:ellipsis}
+.modal-sub-cnt{opacity:.5;font-weight:400;flex-shrink:0}
+
 /* Placeholder */
 .placeholder{
   display:flex;flex-direction:column;align-items:center;
@@ -249,6 +261,18 @@ body{
   let exclTSMC  = false;
   const GAP   = 2;
   const LBL_H = 18;
+
+  // ── sub-sector map (code → sub-name) ────────────────
+  let SUBSECTOR_MAP = {};
+  fetch('data/subsector_map.json')
+    .then(r => r.json())
+    .then(data => {
+      Object.entries(data).forEach(([key, codes]) => {
+        const name = key.includes('－') ? key.split('－')[1] : key;
+        codes.forEach(c => { SUBSECTOR_MAP[c] = name; });
+      });
+    })
+    .catch(() => {});
 
   // ── utils ────────────────────────────────────────────
   function fv(v) {
@@ -369,33 +393,101 @@ body{
   }
 
   // ── sector modal ─────────────────────────────────────
-  function openSectorModal(sec, maxAbsPct, sk) {
+  function openSectorModal(sec, maxAbsPct) {
     const modal = document.getElementById('sec-modal');
     const body  = document.getElementById('modal-body');
-    const szLabel = sizeMetric === 'mktcap' ? '市值' : '成交值';
-    const totalSz = sec.stocks.reduce((s, i) => s + (i[sk] || i.v), 0);
+
+    // Modal always sizes by 成交值
+    const totalV = sec.stocks.reduce((s, i) => s + (i.v || 0), 0);
+    const avgP   = totalV > 0
+      ? sec.stocks.reduce((s, i) => s + i.p * (i.v || 0), 0) / totalV
+      : (sec._avgPct || 0);
     document.getElementById('modal-title').textContent = sec.name;
     document.getElementById('modal-meta').textContent  =
-      `${sec.stocks.length} 支　${szLabel} ${fv(totalSz)}　均 ${sec._avgPct > 0 ? '+' : ''}${(sec._avgPct || sec.avgPct).toFixed(2)}%`;
+      `${sec.stocks.length} 支　成交值 ${fv(totalV)}　均 ${avgP > 0 ? '+' : ''}${avgP.toFixed(2)}%`;
     body.innerHTML = '';
     modal.classList.add('open');
 
     requestAnimationFrame(() => {
       const W = body.clientWidth  || 800;
       const H = body.clientHeight || 500;
+
+      // Group stocks by sub-sector
+      const groups = {};
+      sec.stocks.forEach(stk => {
+        const sub = SUBSECTOR_MAP[stk.c] || '其他';
+        if (!groups[sub]) groups[sub] = [];
+        groups[sub].push(stk);
+      });
+
+      const namedKeys = Object.keys(groups).filter(k => k !== '其他');
       const wrap = document.createElement('div');
       wrap.style.cssText = `position:relative;width:${W}px;height:${H}px`;
 
-      const tot = sec.stocks.reduce((s, i) => s + (i[sk] || i.v), 0);
-      const items = sec.stocks.map(i => ({ ...i, _a: ((i[sk] || i.v) / tot) * W * H }));
-      squarify(items, 0, 0, W, H).forEach(stk => {
-        const sw = stk.w - 1, sh = stk.h - 1;
-        const se = buildStkEl({ ...stk, x: stk.x + .5, y: stk.y + .5 }, sw, sh, sec.name, maxAbsPct);
-        se.style.left   = (stk.x + .5) + 'px';
-        se.style.top    = (stk.y + .5) + 'px';
-        se.style.width  = sw + 'px';
-        se.style.height = sh + 'px';
-        wrap.appendChild(se);
+      if (namedKeys.length < 2) {
+        // Flat view — no meaningful sub-sector data
+        const tot = sec.stocks.reduce((s, i) => s + (i.v || 0), 0);
+        if (tot > 0) {
+          const items = sec.stocks.map(i => ({ ...i, _a: ((i.v || 0) / tot) * W * H }));
+          squarify(items, 0, 0, W, H).forEach(stk => {
+            const sw = stk.w - 1, sh = stk.h - 1;
+            const se = buildStkEl(stk, sw, sh, sec.name, maxAbsPct);
+            se.style.left = (stk.x + .5) + 'px'; se.style.top = (stk.y + .5) + 'px';
+            se.style.width = sw + 'px'; se.style.height = sh + 'px';
+            wrap.appendChild(se);
+          });
+        }
+        body.appendChild(wrap);
+        return;
+      }
+
+      // Two-level grouped treemap
+      const SUB_LBL_H = 17;
+      const SUB_GAP   = 2;
+
+      const subList = Object.entries(groups).map(([name, stocks]) => {
+        const tv = stocks.reduce((s, i) => s + (i.v || 0), 0);
+        const ap = tv > 0 ? stocks.reduce((s, i) => s + i.p * (i.v || 0), 0) / tv : 0;
+        return { name, stocks, totalV: tv, avgPct: ap };
+      }).filter(g => g.totalV > 0).sort((a, b) => b.totalV - a.totalV);
+
+      const tvAll = subList.reduce((s, g) => s + g.totalV, 0);
+      subList.forEach(g => { g._a = (g.totalV / tvAll) * W * H; });
+
+      squarify(subList, 0, 0, W, H).forEach(sub => {
+        const sw = sub.w - SUB_GAP, sh = sub.h - SUB_GAP;
+        const subEl = document.createElement('div');
+        subEl.style.cssText = `position:absolute;left:${sub.x+SUB_GAP/2}px;top:${sub.y+SUB_GAP/2}px;`
+          + `width:${sw}px;height:${sh}px;background:#ddd5c2;`
+          + `border:1px solid rgba(0,0,0,.08);border-radius:3px;overflow:hidden`;
+
+        // Sub-sector label
+        const sign = sub.avgPct > 0 ? '+' : '';
+        const lc = sub.avgPct > 0.3 ? '#c01818' : sub.avgPct < -0.3 ? '#0a6820' : '#9a8a70';
+        const lbl = document.createElement('div');
+        lbl.className = 'modal-sub-lbl';
+        lbl.innerHTML = `<span class="modal-sub-name">${sub.name}</span>`
+          + `<span style="color:${lc};flex-shrink:0">${sign}${sub.avgPct.toFixed(2)}%</span>`
+          + `<span class="modal-sub-cnt">${sub.stocks.length}支</span>`;
+        subEl.appendChild(lbl);
+
+        // Stocks within this sub-sector
+        const innerH = sh - SUB_LBL_H;
+        if (sub.stocks.length > 0 && innerH > 4 && sw > 4) {
+          const stot = sub.stocks.reduce((s, i) => s + (i.v || 0), 0);
+          if (stot > 0) {
+            const sItems = sub.stocks.map(i => ({ ...i, _a: ((i.v || 0) / stot) * sw * innerH }));
+            squarify(sItems, 0, SUB_LBL_H, sw, innerH).forEach(stk => {
+              const esw = stk.w - .8, esh = stk.h - .8;
+              if (esw < 4 || esh < 4) return;
+              const se = buildStkEl(stk, esw, esh, sub.name, maxAbsPct);
+              se.style.left = (stk.x + .4) + 'px'; se.style.top = (stk.y + .4) + 'px';
+              se.style.width = esw + 'px'; se.style.height = esh + 'px';
+              subEl.appendChild(se);
+            });
+          }
+        }
+        wrap.appendChild(subEl);
       });
       body.appendChild(wrap);
     });
@@ -475,7 +567,7 @@ body{
       lbl.innerHTML = `<span class="sec-lbl-name">${sec.name}</span>
         <span class="sec-lbl-pct" style="color:${secColor}">${sign}${sec._avgPct.toFixed(2)}%</span>
         <span class="sec-lbl-icon">↗</span>`;
-      lbl.addEventListener('click', () => openSectorModal(sec, maxAbsPct, sk));
+      lbl.addEventListener('click', () => openSectorModal(sec, maxAbsPct));
       el.appendChild(lbl);
 
       // Stocks treemap
