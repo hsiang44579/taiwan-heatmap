@@ -232,7 +232,13 @@ body{
   <div class="tt-r"><span>產業</span><span class="tt-v" id="tt-s"></span></div>
 </div>
 
-<script src="data/chart_data.js"></script>
+<script>
+  (function(){
+    const d = new Date();
+    const v = `${d.getFullYear()}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
+    document.write('<scr'+'ipt src="data/chart_data.js?v='+v+'"><\/scr'+'ipt>');
+  })();
+</script>
 <script>
 (function () {
   const stage   = document.getElementById('hm-stage');
