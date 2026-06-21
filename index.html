@@ -199,14 +199,14 @@ body{
 
   <div class="legend">
     <div class="legend-bar">
-      <span style="background:#05531a"></span><span style="background:#0d7a28"></span>
-      <span style="background:#1da83a"></span><span style="background:#64c87a"></span>
-      <span style="background:#b0ddb8"></span><span style="background:#c8bc9a"></span>
-      <span style="background:#e8a8a8"></span><span style="background:#e05050"></span>
-      <span style="background:#c01c1c"></span><span style="background:#850d0d"></span>
+      <span style="background:#054018"></span><span style="background:#0a6820"></span>
+      <span style="background:#1da838"></span><span style="background:#6cc878"></span>
+      <span style="background:#b8e8c0"></span><span style="background:#c8bc9a"></span>
+      <span style="background:#f5c0c0"></span><span style="background:#e87070"></span>
+      <span style="background:#c82020"></span><span style="background:#600808"></span>
     </div>
     <span>跌多</span>
-    <span style="flex:1;height:1px;background:linear-gradient(to right,#05531a,#1da83a,#b0ddb8,#c8bc9a,#e8a8a8,#e05050,#850d0d);min-width:60px;border-radius:2px"></span>
+    <span style="flex:1;height:1px;background:linear-gradient(to right,#054018,#1da838,#b8e8c0,#c8bc9a,#f5c0c0,#e87070,#c82020,#600808);min-width:60px;border-radius:2px"></span>
     <span>漲多</span>
     <span class="legend-note" id="size-note">區塊大小 = 市值　點擊產業標籤可展開</span>
   </div>
@@ -286,18 +286,20 @@ body{
     const scale = Math.max(3, maxPct);
     const t = Math.max(-1, Math.min(1, p / scale));
     if (t > 0) {
-      if (t < 0.2) return { bg: '#5a1515', tx: '#ffb0b0' };
-      if (t < 0.4) return { bg: '#8b1a1a', tx: '#ffc8c8' };
-      if (t < 0.6) return { bg: '#c01c1c', tx: '#fff' };
-      if (t < 0.8) return { bg: '#e03535', tx: '#fff' };
-      return { bg: '#f05050', tx: '#fff' };
+      // 漲：淺粉（小漲）→ 深紅（大漲）
+      if (t < 0.2) return { bg: '#f5c0c0', tx: '#7a1010' };
+      if (t < 0.4) return { bg: '#e87070', tx: '#fff' };
+      if (t < 0.6) return { bg: '#c82020', tx: '#fff' };
+      if (t < 0.8) return { bg: '#8b1010', tx: '#ffc8c8' };
+      return { bg: '#600808', tx: '#ffb0b0' };
     } else if (t < 0) {
+      // 跌：淺綠（小跌）→ 深綠（大跌）
       const a = Math.abs(t);
-      if (a < 0.2) return { bg: '#0d2e14', tx: '#80d890' };
-      if (a < 0.4) return { bg: '#0a5020', tx: '#a0e0a8' };
-      if (a < 0.6) return { bg: '#0d7a28', tx: '#fff' };
-      if (a < 0.8) return { bg: '#1da83a', tx: '#fff' };
-      return { bg: '#28c845', tx: '#fff' };
+      if (a < 0.2) return { bg: '#b8e8c0', tx: '#0a4018' };
+      if (a < 0.4) return { bg: '#6cc878', tx: '#fff' };
+      if (a < 0.6) return { bg: '#1da838', tx: '#fff' };
+      if (a < 0.8) return { bg: '#0a6820', tx: '#a0e8b0' };
+      return { bg: '#054018', tx: '#80d890' };
     }
     return { bg: '#b5a888', tx: '#3a2a10' };
   }
@@ -394,17 +396,18 @@ body{
 
   // ── sector modal ─────────────────────────────────────
   function openSectorModal(sec, maxAbsPct) {
-    const modal = document.getElementById('sec-modal');
-    const body  = document.getElementById('modal-body');
+    const modal  = document.getElementById('sec-modal');
+    const body   = document.getElementById('modal-body');
+    const sk     = sizeMetric === 'mktcap' ? 'm' : 'v';
+    const szLabel = sizeMetric === 'mktcap' ? '市值' : '成交值';
 
-    // Modal always sizes by 成交值
-    const totalV = sec.stocks.reduce((s, i) => s + (i.v || 0), 0);
-    const avgP   = totalV > 0
-      ? sec.stocks.reduce((s, i) => s + i.p * (i.v || 0), 0) / totalV
+    const totalSz = sec.stocks.reduce((s, i) => s + (i[sk] || i.v), 0);
+    const avgP    = totalSz > 0
+      ? sec.stocks.reduce((s, i) => s + i.p * (i[sk] || i.v), 0) / totalSz
       : (sec._avgPct || 0);
     document.getElementById('modal-title').textContent = sec.name;
     document.getElementById('modal-meta').textContent  =
-      `${sec.stocks.length} 支　成交值 ${fv(totalV)}　均 ${avgP > 0 ? '+' : ''}${avgP.toFixed(2)}%`;
+      `${sec.stocks.length} 支　${szLabel} ${fv(totalSz)}　均 ${avgP > 0 ? '+' : ''}${avgP.toFixed(2)}%`;
     body.innerHTML = '';
     modal.classList.add('open');
 
@@ -426,9 +429,9 @@ body{
 
       if (namedKeys.length < 2) {
         // Flat view — no meaningful sub-sector data
-        const tot = sec.stocks.reduce((s, i) => s + (i.v || 0), 0);
+        const tot = sec.stocks.reduce((s, i) => s + (i[sk] || i.v), 0);
         if (tot > 0) {
-          const items = sec.stocks.map(i => ({ ...i, _a: ((i.v || 0) / tot) * W * H }));
+          const items = sec.stocks.map(i => ({ ...i, _a: ((i[sk] || i.v) / tot) * W * H }));
           squarify(items, 0, 0, W, H).forEach(stk => {
             const sw = stk.w - 1, sh = stk.h - 1;
             const se = buildStkEl(stk, sw, sh, sec.name, maxAbsPct);
@@ -446,13 +449,13 @@ body{
       const SUB_GAP   = 2;
 
       const subList = Object.entries(groups).map(([name, stocks]) => {
-        const tv = stocks.reduce((s, i) => s + (i.v || 0), 0);
-        const ap = tv > 0 ? stocks.reduce((s, i) => s + i.p * (i.v || 0), 0) / tv : 0;
-        return { name, stocks, totalV: tv, avgPct: ap };
-      }).filter(g => g.totalV > 0).sort((a, b) => b.totalV - a.totalV);
+        const tv = stocks.reduce((s, i) => s + (i[sk] || i.v), 0);
+        const ap = tv > 0 ? stocks.reduce((s, i) => s + i.p * (i[sk] || i.v), 0) / tv : 0;
+        return { name, stocks, _sz: tv, avgPct: ap };
+      }).filter(g => g._sz > 0).sort((a, b) => b._sz - a._sz);
 
-      const tvAll = subList.reduce((s, g) => s + g.totalV, 0);
-      subList.forEach(g => { g._a = (g.totalV / tvAll) * W * H; });
+      const szAll = subList.reduce((s, g) => s + g._sz, 0);
+      subList.forEach(g => { g._a = (g._sz / szAll) * W * H; });
 
       squarify(subList, 0, 0, W, H).forEach(sub => {
         const sw = sub.w - SUB_GAP, sh = sub.h - SUB_GAP;
@@ -474,9 +477,9 @@ body{
         // Stocks within this sub-sector
         const innerH = sh - SUB_LBL_H;
         if (sub.stocks.length > 0 && innerH > 4 && sw > 4) {
-          const stot = sub.stocks.reduce((s, i) => s + (i.v || 0), 0);
+          const stot = sub.stocks.reduce((s, i) => s + (i[sk] || i.v), 0);
           if (stot > 0) {
-            const sItems = sub.stocks.map(i => ({ ...i, _a: ((i.v || 0) / stot) * sw * innerH }));
+            const sItems = sub.stocks.map(i => ({ ...i, _a: ((i[sk] || i.v) / stot) * sw * innerH }));
             squarify(sItems, 0, SUB_LBL_H, sw, innerH).forEach(stk => {
               const esw = stk.w - .8, esh = stk.h - .8;
               if (esw < 4 || esh < 4) return;
