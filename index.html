@@ -716,53 +716,82 @@ body{
     return { tse, otc };
   }
 
+  // TWSE mis API 不送 CORS header，瀏覽器直連會被擋；透過 corsproxy.io 中轉
   async function fetchBatch(codes, market) {
     // TWSE mis API 支援 tse_xxxx.tw 和 otc_xxxx.tw 混合查詢
-    const exCh = codes.map(c => `${market}_${c}.tw`).join('%7C'); // URL-encode |
-    const url = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${exCh}&json=1&delay=0&_=${Date.now()}`;
+    const exCh = codes.map(c => `${market}_${c}.tw`).join('|');
+    const target = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${exCh}&json=1&delay=0&_=${Date.now()}`;
+    const url = 'https://corsproxy.io/?url=' + encodeURIComponent(target);
     const r = await fetch(url, { cache: 'no-store' });
     const json = await r.json();
     return json.msgArray || [];
   }
 
+  // 取現價（價格須 > 0；API 常以 "-" 或 "0.0000" 表示無報價）
+  // 優先成交價 z → 買賣最佳一檔中值 → 當日高安中值（漲跌停鎖死時備援）
+  function livePrice(item) {
+    const pos = v => { const n = parseFloat(v); return (isFinite(n) && n > 0) ? n : NaN; };
+    const z = pos(item.z);
+    if (isFinite(z)) return z;
+    const bid = pos((item.b || '').split('_')[0]);
+    const ask = pos((item.a || '').split('_')[0]);
+    if (isFinite(bid) && isFinite(ask)) return (bid + ask) / 2;
+    if (isFinite(bid)) return bid;  // 只有買盤（接近漲停）
+    if (isFinite(ask)) return ask;  // 只有賣盤（接近跌停）
+    // 無成交價也無有效買賣盤 → 漲跌停鎖死，o=h=l=鎖死價，用高安中值推估
+    const h = pos(item.h), l = pos(item.l), o = pos(item.o);
+    if (isFinite(h) && isFinite(l)) return (h + l) / 2;
+    return isFinite(h) ? h : (isFinite(l) ? l : (isFinite(o) ? o : NaN));
+  }
+
   async function fetchAllIntraday() {
-    try {
-      const { tse, otc } = allStockCodes();
-      const BATCH = 150;
-      const map = {};
+    const { tse, otc } = allStockCodes();
+    const BATCH = 150;
+    const map = {};
+    let okBatches = 0;
 
-      async function processBatches(codes, market) {
-        for (let i = 0; i < codes.length; i += BATCH) {
-          const items = await fetchBatch(codes.slice(i, i + BATCH), market);
-          items.forEach(item => {
-            const z = parseFloat(item.z);   // 現價
-            const y = parseFloat(item.y);   // 昨收
-            const tv = parseFloat(item.tv); // 累計成交量（張）
-            if (!isFinite(z) || !isFinite(y) || y === 0 || !isFinite(tv)) return;
-            map[item.c] = {
-              p: (z - y) / y * 100,  // 漲跌幅 %
-              v: tv * z * 1000,      // 估算累計成交值（NTD）
-              z                      // 現價
-            };
-          });
+    async function processBatches(codes, market) {
+      for (let i = 0; i < codes.length; i += BATCH) {
+        let items;
+        try {
+          items = await fetchBatch(codes.slice(i, i + BATCH), market);
+        } catch (e) {
+          console.warn('盤中批次失敗，跳過:', market, i, e);
+          continue; // 單批失敗不影響其餘批次
         }
+        okBatches++;
+        items.forEach(item => {
+          const price = livePrice(item);    // 現價（含中值備援）
+          const y = parseFloat(item.y);     // 昨收
+          const vol = parseFloat(item.v);   // 累積成交量（張）
+          if (!isFinite(price) || !isFinite(y) || y === 0) return;
+          map[item.c] = {
+            p: (price - y) / y * 100,                       // 漲跌幅 %
+            v: isFinite(vol) ? vol * price * 1000 : 0,      // 估算累計成交值（NTD）
+            z: price                                        // 現價
+          };
+        });
       }
-
-      await processBatches(tse, 'tse');
-      await processBatches(otc, 'otc');
-
-      intradayData = map;
-
-      // 更新時間戳
-      const d = twNow();
-      const ts = [d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds()]
-        .map(n => String(n).padStart(2, '0')).join(':');
-      document.getElementById('intraday-time').textContent = ts;
-
-      render();
-    } catch (e) {
-      console.warn('盤中資料更新失敗:', e);
     }
+
+    await processBatches(tse, 'tse');
+    await processBatches(otc, 'otc');
+
+    // 全部批次都失敗（例如 proxy 掛掉）→ 保留前次資料，不要清空
+    if (okBatches === 0 || Object.keys(map).length === 0) {
+      console.warn('盤中資料更新失敗：所有批次皆無回應');
+      return;
+    }
+
+    intradayData = map;
+
+    // 更新時間戳
+    const d = twNow();
+    const ts = [d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds()]
+      .map(n => String(n).padStart(2, '0')).join(':');
+    document.getElementById('intraday-time').textContent = ts;
+
+    render();
   }
 
   function startIntraday() {
