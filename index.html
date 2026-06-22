@@ -327,6 +327,8 @@ body{
   // ── squarified treemap ───────────────────────────────
   function squarify(items, x, y, w, h) {
     if (!items.length) return [];
+    // squarified treemap 需輸入由大到小排序，否則大塊會排到小塊之後
+    items = [...items].sort((a, b) => b._a - a._a);
     const tot = items.reduce((s, d) => s + d._a, 0);
     const res = [];
     let rem = [...items], rx = x, ry = y, rw = w, rh = h, rt = tot;
