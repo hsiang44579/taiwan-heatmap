@@ -168,6 +168,10 @@ body{
 }
 #intraday-badge:hover{background:rgba(192,28,28,.15)}
 @keyframes pulse-border{0%,100%{border-color:rgba(192,28,28,.3)}50%{border-color:rgba(192,28,28,.7)}}
+/* 收盤後暫存 13:30 狀態：靜態灰金色，不跳動 */
+#intraday-badge.closed{color:#9a7a1c;background:rgba(176,140,24,.08);border-color:rgba(176,140,24,.35);animation:none}
+#intraday-badge.closed:hover{background:rgba(176,140,24,.15)}
+#intraday-badge.closed .intraday-dot{display:none}
 .intraday-dot{width:5px;height:5px;border-radius:50%;background:#c01c1c;flex-shrink:0;
   animation:pulse-dot 1.4s ease-in-out infinite}
 @keyframes pulse-dot{0%,100%{opacity:1}50%{opacity:.3}}
@@ -184,7 +188,7 @@ body{
       <div class="hdr-stat" id="stat-inline">—</div>
       <span id="intraday-badge" title="點擊手動刷新">
         <span class="intraday-dot"></span>
-        盤中即時&nbsp;<span id="intraday-time">--:--:--</span>
+        <span id="intraday-label">盤中即時</span>&nbsp;<span id="intraday-time">--:--:--</span>
       </span>
     </div>
   </div>
@@ -551,8 +555,10 @@ body{
 
     let sectors = JSON.parse(JSON.stringify(data.sectors));
 
-    // 盤中即時：1d 週期時以即時資料覆蓋 p / v
-    if (intradayData && currentPeriod === '1d') {
+    // 盤中即時：1d 週期、且暫存資料屬於今天時，以即時資料覆蓋 p / v
+    // （收盤後到正式資料更新前，仍沿用 13:30 最後狀態；跨日則自動失效）
+    const intradayActive = intradayData && currentPeriod === '1d' && intradayStamp === twDateStr();
+    if (intradayActive) {
       sectors = sectors.map(sec => {
         const stocks = sec.stocks.map(stk => {
           const id = intradayData[stk.c];
@@ -636,7 +642,9 @@ body{
     const mktLabel   = { tse:'上市', otc:'上櫃', all:'上市＋上櫃' }[currentMarket];
     const szLabel    = sizeMetric === 'mktcap' ? '市值' : '成交值';
 
-    const intradayNote = (intradayData && currentPeriod === '1d') ? '　🟢 盤中即時' : '';
+    const intradayNote = intradayActive
+      ? (isMarketOpen() ? '　🟢 盤中即時' : '　🟡 13:30 收盤（待資料更新）')
+      : '';
     document.getElementById('hdr-sub').textContent =
       `${mktLabel}　${rangeText}　${totalStocks} 支　${sectors.length} 個產業${exclTSMC ? '（已排除台積電）' : ''}${shortNote}${intradayNote}`;
     document.getElementById('stat-inline').textContent =
@@ -688,10 +696,36 @@ body{
   // ── Intraday realtime mode ───────────────────────────
   let intradayData   = null;  // { code: { p, v, z } }
   let intradayTimer  = null;
+  let intradayStamp  = null;  // 最後抓到盤中資料的台灣日期 YYYYMMDD（收盤後暫存判斷用）
 
   function twNow() {
     // 回傳台灣時間的 Date（UTC+8）
     return new Date(Date.now() + 8 * 3600000);
+  }
+
+  function twDateStr() {
+    const d = twNow();
+    return `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, '0')}${String(d.getUTCDate()).padStart(2, '0')}`;
+  }
+
+  // 收盤暫存：把盤中資料存進 localStorage，收盤後（含重新整理／新分頁）沿用 13:30 狀態
+  const LS_KEY = 'heatmap_intraday';
+  function saveIntradayCache() {
+    try { localStorage.setItem(LS_KEY, JSON.stringify({ stamp: intradayStamp, data: intradayData })); } catch (e) {}
+  }
+  function loadIntradayCache() {
+    try {
+      const o = JSON.parse(localStorage.getItem(LS_KEY) || 'null');
+      if (o && o.stamp === twDateStr() && o.data) { intradayData = o.data; intradayStamp = o.stamp; return true; }
+    } catch (e) {}
+    return false;
+  }
+  function showClosedBadge() {
+    const badge = document.getElementById('intraday-badge');
+    badge.style.display = 'inline-flex';
+    badge.classList.add('closed');
+    document.getElementById('intraday-label').textContent = '13:30 收盤';
+    document.getElementById('intraday-time').textContent = '已暫存';
   }
 
   function isMarketOpen() {
@@ -786,11 +820,16 @@ body{
     }
 
     intradayData = map;
+    intradayStamp = twDateStr();
+    saveIntradayCache();
 
-    // 更新時間戳
+    // 更新時間戳（盤中態 badge）
     const d = twNow();
     const ts = [d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds()]
       .map(n => String(n).padStart(2, '0')).join(':');
+    const badge = document.getElementById('intraday-badge');
+    badge.classList.remove('closed');
+    document.getElementById('intraday-label').textContent = '盤中即時';
     document.getElementById('intraday-time').textContent = ts;
 
     render();
@@ -803,11 +842,21 @@ body{
     intradayTimer = setInterval(fetchAllIntraday, 60000);
   }
 
+  // 收盤：停止輪詢，但「保留」最後盤中資料，畫面停在 13:30 收盤狀態直到資料更新
   function stopIntraday() {
     clearInterval(intradayTimer);
     intradayTimer = null;
-    intradayData = null;
-    document.getElementById('intraday-badge').style.display = 'none';
+    // 若今天曾抓到盤中資料 → 切換為收盤暫存態（不清空 intradayData）
+    if (intradayData && intradayStamp === twDateStr()) {
+      showClosedBadge();
+      render();
+    } else {
+      // 非當日暫存（例如隔天開盤前）→ 清空回收盤資料
+      intradayData = null;
+      intradayStamp = null;
+      document.getElementById('intraday-badge').style.display = 'none';
+      render();
+    }
   }
 
   // 手動刷新按鈕
@@ -824,9 +873,12 @@ body{
     document.getElementById('hdr-sub').textContent = '請先執行 fetch_data.py';
   } else {
     render();
-    // 若盤中時間自動啟動即時模式
+    // 若盤中時間自動啟動即時模式；否則嘗試載入今天 13:30 的收盤暫存
     if (isMarketOpen()) {
       startIntraday();
+    } else if (loadIntradayCache()) {
+      showClosedBadge();
+      render();
     }
     // 每分鐘檢查是否進入/離開盤中時間
     setInterval(() => {
