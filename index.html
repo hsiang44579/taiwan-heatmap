@@ -802,6 +802,7 @@ body{
     const BATCH = 150;
     const map = {};
     let okBatches = 0;
+    let latestApiDate = null; // 追蹤 mis API 實際回傳的日期（d 欄位）
 
     async function processBatches(codes, market) {
       for (let i = 0; i < codes.length; i += BATCH) {
@@ -823,6 +824,10 @@ body{
             v: isFinite(vol) ? vol * price * 1000 : 0,      // 估算累計成交值（NTD）
             z: price                                        // 現價
           };
+          // 從 d 欄位追蹤最新的 API 資料日期（格式 YYYYMMDD）
+          if (item.d && (!latestApiDate || item.d > latestApiDate)) {
+            latestApiDate = item.d;
+          }
         });
       }
     }
@@ -833,11 +838,19 @@ body{
     // 全部批次都失敗（例如 proxy 掛掉）→ 保留前次資料，不要清空
     if (okBatches === 0 || Object.keys(map).length === 0) {
       console.warn('盤中資料更新失敗：所有批次皆無回應');
-      return;
+      return false;
+    }
+
+    // 盤後呼叫時：mis API 仍回傳最終成交價，但需確認日期是今天
+    // 若 API 回傳的是前一天資料（隔日凌晨後 API 重置）→ 放棄，不覆蓋快取
+    const today = twDateStr();
+    if (latestApiDate && latestApiDate !== today) {
+      console.warn(`mis API 日期 ${latestApiDate} 非今日 ${today}，放棄`);
+      return false;
     }
 
     intradayData = map;
-    intradayStamp = twDateStr();
+    intradayStamp = today;
     saveIntradayCache();
 
     // 更新時間戳（盤中態 badge）
@@ -850,6 +863,7 @@ body{
     document.getElementById('intraday-time').textContent = ts;
 
     render();
+    return true;
   }
 
   function startIntraday() {
@@ -896,6 +910,15 @@ body{
     } else if (loadIntradayCache()) {
       showClosedBadge();
       render();
+    } else {
+      // 盤後首次載入（無快取）：mis API 收盤後仍持續提供當日最終成交價，
+      // 直接抓一次收盤快照並存入 localStorage，下次載入就不需要再抓
+      const day = twNow().getUTCDay();
+      if (day !== 0 && day !== 6) { // 週末不嘗試
+        fetchAllIntraday().then(ok => {
+          if (ok) showClosedBadge();
+        }).catch(() => {});
+      }
     }
     // 每分鐘檢查是否進入/離開盤中時間
     setInterval(() => {
