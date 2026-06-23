@@ -30,8 +30,11 @@ INDUSTRY_NAMES = {
 # TPEX 憑證缺 Subject Key Identifier，Python 3.13+ 預設啟用的 RFC 5280 嚴格模式
 # （VERIFY_X509_STRICT）會拒絕，導致 OTC 抓取失敗。只關閉嚴格欄位檢查、
 # 仍保留憑證鏈與主機名驗證（等同 Python 3.12 的預設行為）。
+# getattr 確保 Python 3.11/3.12 不報 AttributeError（舊版沒有這個常數）。
 _SSL_CTX = ssl.create_default_context()
-_SSL_CTX.verify_flags &= ~ssl.VERIFY_X509_STRICT
+_X509_STRICT = getattr(ssl, 'VERIFY_X509_STRICT', 0)
+if _X509_STRICT:
+    _SSL_CTX.verify_flags &= ~_X509_STRICT
 
 def fetch(url):
     req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
@@ -300,7 +303,8 @@ def main():
         otc_raw = fetch("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes")
         otc_stocks, otc_date = parse_otc_stocks(otc_raw, code_to_ind_otc, shares_map_otc)
         print(f"      {len(otc_stocks)} 支　交易日: {otc_date}")
-        if not trade_date and otc_date:
+        # 若 OTC 日期較新（TSE OpenAPI 有時落後一天），改用 OTC 日期
+        if otc_date and (not trade_date or otc_date > trade_date):
             trade_date = otc_date
     except Exception as e:
         print(f"      上櫃行情失敗（繼續執行）: {e}")
