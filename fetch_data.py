@@ -4,6 +4,7 @@
 """
 
 import urllib.request
+import ssl
 import json
 import os
 import datetime
@@ -26,9 +27,15 @@ INDUSTRY_NAMES = {
     "35": "綠能環保", "36": "數位雲端", "37": "運動休閒", "38": "居家生活",
 }
 
+# TPEX 憑證缺 Subject Key Identifier，Python 3.13+ 預設啟用的 RFC 5280 嚴格模式
+# （VERIFY_X509_STRICT）會拒絕，導致 OTC 抓取失敗。只關閉嚴格欄位檢查、
+# 仍保留憑證鏈與主機名驗證（等同 Python 3.12 的預設行為）。
+_SSL_CTX = ssl.create_default_context()
+_SSL_CTX.verify_flags &= ~ssl.VERIFY_X509_STRICT
+
 def fetch(url):
     req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-    with urllib.request.urlopen(req, timeout=20) as r:
+    with urllib.request.urlopen(req, timeout=20, context=_SSL_CTX) as r:
         return json.loads(r.read())
 
 def parse_num(s):
