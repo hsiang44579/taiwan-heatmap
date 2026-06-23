@@ -30,6 +30,7 @@ INDUSTRY_NAMES = {
 # 手動覆蓋 TWSE/TPEX 官方產業分類（官方歸類與業務實際不符者）
 SECTOR_OVERRIDE = {
     '3189': '電子零組件',  # 景碩：PCB 廠，TWSE 誤歸半導體
+    '2317': '電腦週邊',    # 鴻海：ODM 代工，與廣達/仁寶同族群，TWSE 歸其他電子
 }
 
 # TPEX 憑證缺 Subject Key Identifier，Python 3.13+ 預設啟用的 RFC 5280 嚴格模式
