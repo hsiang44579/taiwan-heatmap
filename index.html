@@ -555,15 +555,22 @@ body{
 
     let sectors = JSON.parse(JSON.stringify(data.sectors));
 
-    // 盤中即時：1d 週期、且暫存資料屬於今天時，以即時資料覆蓋 p / v
-    // （收盤後到正式資料更新前，仍沿用 13:30 最後狀態；跨日則自動失效）
-    const intradayActive = intradayData && currentPeriod === '1d' && intradayStamp === twDateStr();
+    // 盤中即時／收盤暫存：今日資料有效時，覆蓋所有週期的漲跌幅
+    // 1d：直接用即時漲跌幅；多日：從靜態資料反推基期股價，算到今日收盤的真實幅度
+    // 收盤後到正式資料更新前，沿用 13:30 最後狀態；跨日則自動失效
+    const intradayActive = !!(intradayData && intradayStamp === twDateStr());
     if (intradayActive) {
       sectors = sectors.map(sec => {
         const stocks = sec.stocks.map(stk => {
           const id = intradayData[stk.c];
           if (!id) return stk;
-          return { ...stk, p: id.p, v: id.v > 0 ? id.v : stk.v };
+          if (currentPeriod === '1d') {
+            return { ...stk, p: id.p, v: id.v > 0 ? id.v : stk.v };
+          }
+          // 多日週期：從「靜態末日收盤 + 靜態漲跌幅」反推基期收盤，再算到今日即時收盤
+          const baseCl = stk.p !== 0 ? stk.cl / (1 + stk.p / 100) : stk.cl;
+          const newPct = baseCl > 0 ? Math.round((id.z / baseCl - 1) * 10000) / 100 : id.p;
+          return { ...stk, p: newPct };  // 多日不動 v，保留累積成交量維持格子大小
         });
         const tv = stocks.reduce((s, i) => s + (i.v || 0), 0);
         const avgPct = tv > 0
@@ -633,9 +640,13 @@ body{
     // Update header & legend
     const totalStocks = sectors.reduce((s, d) => s + d.stocks.length, 0);
     const fmt = d => d.replace(/(\d{4})(\d{2})(\d{2})/, '$1/$2/$3');
-    const rangeText = data.fromDate === data.toDate
-      ? fmt(data.toDate)
-      : `${fmt(data.fromDate)} – ${fmt(data.toDate)}`;
+    // 盤中／收盤暫存啟用時，以今日為結束日期
+    const today = twDateStr();
+    const effectiveEnd  = intradayActive ? today : data.toDate;
+    const effectiveFrom = (intradayActive && currentPeriod === '1d') ? today : data.fromDate;
+    const rangeText = effectiveFrom === effectiveEnd
+      ? fmt(effectiveEnd)
+      : `${fmt(effectiveFrom)} – ${fmt(effectiveEnd)}`;
     const periodDays = { '1d':1,'3d':3,'5d':5,'20d':20,'60d':60 }[currentPeriod] || 1;
     const shortfall  = periodDays - data.actualDays;
     const shortNote  = shortfall > 0 ? `　⚠️ 資料僅 ${data.actualDays} 天（還需 ${shortfall} 個交易日）` : '';

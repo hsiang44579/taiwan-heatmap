@@ -27,6 +27,11 @@ INDUSTRY_NAMES = {
     "35": "綠能環保", "36": "數位雲端", "37": "運動休閒", "38": "居家生活",
 }
 
+# 手動覆蓋 TWSE/TPEX 官方產業分類（官方歸類與業務實際不符者）
+SECTOR_OVERRIDE = {
+    '3189': '電子零組件',  # 景碩：PCB 廠，TWSE 誤歸半導體
+}
+
 # TPEX 憑證缺 Subject Key Identifier，Python 3.13+ 預設啟用的 RFC 5280 嚴格模式
 # （VERIFY_X509_STRICT）會拒絕，導致 OTC 抓取失敗。只關閉嚴格欄位檢查、
 # 仍保留憑證鏈與主機名驗證（等同 Python 3.12 的預設行為）。
@@ -115,7 +120,7 @@ def parse_tse_stocks(prices, code_to_ind, capital_map=None):
             'close': close, 'pct': pct,
             'value': int(value),
             'mktcap': calc_mktcap(close, capital_map, code),
-            'sector': INDUSTRY_NAMES.get(ind_code, '其他'),
+            'sector': SECTOR_OVERRIDE.get(code, INDUSTRY_NAMES.get(ind_code, '其他')),
         })
     return stocks, trade_date
 
@@ -168,7 +173,7 @@ def parse_otc_stocks(data, code_to_ind, capital_map=None):
             'close': close, 'pct': pct,
             'value': int(value),
             'mktcap': calc_mktcap(close, capital_map, code),
-            'sector': INDUSTRY_NAMES.get(ind_code, '其他'),
+            'sector': SECTOR_OVERRIDE.get(code, INDUSTRY_NAMES.get(ind_code, '其他')),
         })
     return stocks, trade_date
 
