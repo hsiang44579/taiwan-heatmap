@@ -303,8 +303,7 @@ def main():
         otc_raw = fetch("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes")
         otc_stocks, otc_date = parse_otc_stocks(otc_raw, code_to_ind_otc, shares_map_otc)
         print(f"      {len(otc_stocks)} 支　交易日: {otc_date}")
-        # 若 OTC 日期較新（TSE OpenAPI 有時落後一天），改用 OTC 日期
-        if otc_date and (not trade_date or otc_date > trade_date):
+        if not trade_date and otc_date:
             trade_date = otc_date
     except Exception as e:
         print(f"      上櫃行情失敗（繼續執行）: {e}")
@@ -322,6 +321,9 @@ def main():
     manifest = load_manifest()
     if trade_date not in manifest['dates']:
         manifest['dates'].append(trade_date)
+    # 移除 manifest 裡沒有對應 JSON 的日期（例如手動刪檔後殘留的記錄）
+    manifest['dates'] = [d for d in manifest['dates']
+                         if os.path.exists(os.path.join(DATA_DIR, f"{d}.json"))]
     manifest['dates'].sort(reverse=True)
 
     if len(manifest['dates']) > MAX_DAYS:
