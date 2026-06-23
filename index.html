@@ -752,10 +752,27 @@ body{
     return { tse, otc };
   }
 
-  // TWSE mis API 不送 CORS header，瀏覽器直連會被擋；透過 corsproxy.io 中轉
+  // TWSE mis API 不送 CORS header，瀏覽器直連會被擋。
+  // 優先走同源 Vercel proxy（/api/quote，穩定、不快取）；
+  // 非 Vercel 環境（GitHub Pages／本機）自動退回公開 proxy。
+  let useSameOrigin = true;
   async function fetchBatch(codes, market) {
     // TWSE mis API 支援 tse_xxxx.tw 和 otc_xxxx.tw 混合查詢
     const exCh = codes.map(c => `${market}_${c}.tw`).join('|');
+
+    if (useSameOrigin) {
+      try {
+        const r = await fetch(`/api/quote?ex_ch=${encodeURIComponent(exCh)}&_=${Date.now()}`, { cache: 'no-store' });
+        if (r.ok) {
+          const j = await r.json();
+          if (j && j.msgArray) return j.msgArray;
+        }
+        throw new Error('same-origin proxy unavailable: ' + r.status);
+      } catch (e) {
+        useSameOrigin = false; // 之後一律改用公開 proxy
+      }
+    }
+
     const target = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${exCh}&json=1&delay=0&_=${Date.now()}`;
     const url = 'https://corsproxy.io/?url=' + encodeURIComponent(target);
     const r = await fetch(url, { cache: 'no-store' });
