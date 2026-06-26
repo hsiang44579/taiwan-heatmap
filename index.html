@@ -766,29 +766,39 @@ body{
   // TWSE mis API 不送 CORS header，瀏覽器直連會被擋。
   // 優先走同源 Vercel proxy（/api/quote，穩定、不快取）；
   // 非 Vercel 環境（GitHub Pages／本機）自動退回公開 proxy。
-  let useSameOrigin = true;
+  // proxy 模式：null=未知，'same'=同源 Vercel proxy，'cors'=公開 proxy（非 Vercel 環境）
+  // 注意：暫時性錯誤（502／逾時）只重試，不可永久降級——否則 TSE 一次打嗝會害後面整片 OTC 改走不穩定的公開 proxy。
+  let proxyMode = null;
+
+  async function fetchViaSameOrigin(exCh) {
+    const r = await fetch(`/api/quote?ex_ch=${encodeURIComponent(exCh)}&_=${Date.now()}`, { cache: 'no-store' });
+    if (r.status === 404) { proxyMode = 'cors'; throw new Error('no serverless function'); } // 此環境無 function
+    if (!r.ok) throw new Error('same-origin status ' + r.status); // 暫時性錯誤，保留同源模式
+    const j = await r.json();
+    if (!j || !j.msgArray) throw new Error('same-origin bad json');
+    proxyMode = 'same';
+    return j.msgArray;
+  }
+
+  async function fetchViaCors(exCh) {
+    const target = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${exCh}&json=1&delay=0&_=${Date.now()}`;
+    const r = await fetch('https://corsproxy.io/?url=' + encodeURIComponent(target), { cache: 'no-store' });
+    const json = await r.json();
+    return json.msgArray || [];
+  }
+
   async function fetchBatch(codes, market) {
     // TWSE mis API 支援 tse_xxxx.tw 和 otc_xxxx.tw 混合查詢
     const exCh = codes.map(c => `${market}_${c}.tw`).join('|');
+    if (proxyMode === 'cors') return fetchViaCors(exCh);
 
-    if (useSameOrigin) {
-      try {
-        const r = await fetch(`/api/quote?ex_ch=${encodeURIComponent(exCh)}&_=${Date.now()}`, { cache: 'no-store' });
-        if (r.ok) {
-          const j = await r.json();
-          if (j && j.msgArray) return j.msgArray;
-        }
-        throw new Error('same-origin proxy unavailable: ' + r.status);
-      } catch (e) {
-        useSameOrigin = false; // 之後一律改用公開 proxy
-      }
+    // proxyMode 為 'same' 或 null（未知）→ 試同源；暫時性失敗重試一次後才放棄該批
+    try {
+      return await fetchViaSameOrigin(exCh);
+    } catch (e) {
+      if (proxyMode === 'cors') return fetchViaCors(exCh); // 剛確認此環境非 Vercel
+      return await fetchViaSameOrigin(exCh);                // 暫時性失敗 → 同源重試一次
     }
-
-    const target = `https://mis.twse.com.tw/stock/api/getStockInfo.jsp?ex_ch=${exCh}&json=1&delay=0&_=${Date.now()}`;
-    const url = 'https://corsproxy.io/?url=' + encodeURIComponent(target);
-    const r = await fetch(url, { cache: 'no-store' });
-    const json = await r.json();
-    return json.msgArray || [];
   }
 
   // 取現價（價格須 > 0；API 常以 "-" 或 "0.0000" 表示無報價）
