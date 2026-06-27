@@ -202,9 +202,17 @@ def compute_period(sorted_dates, n, all_data, market='tse'):
     use = sorted_dates[:n]
     if not use:
         return None
-    latest_d, oldest_d = use[0], use[-1]
+    latest_d = use[0]
+    # 基期 = 視窗「前一個交易日」的收盤，才能完整涵蓋這 N 個交易日的累積變動。
+    # （用 use[-1] 當基期會少算一天，因為那天本身的漲跌也算在這 N 天內。）
+    # 若沒有更早的資料，退回視窗內最舊一天。
+    base_d = sorted_dates[n] if len(sorted_dates) > n else use[-1]
     latest_stocks = {s['code']: s for s in get_stocks_for_market(all_data.get(latest_d), market)}
-    oldest_stocks = {s['code']: s for s in get_stocks_for_market(all_data.get(oldest_d), market)}
+    # 基期候選（由舊到新）：視窗前一天 → 視窗內最舊 → … → 次新；
+    # 個股在基期當天缺資料時，依序退回視窗內最舊的有效日，盡量保留多日跨度。
+    base_candidates = [base_d] + list(reversed(use[1:]))
+    base_maps = [(d, {s['code']: s for s in get_stocks_for_market(all_data.get(d), market)})
+                 for d in base_candidates]
 
     code_value = defaultdict(int)
     for d in use:
@@ -219,11 +227,16 @@ def compute_period(sorted_dates, n, all_data, market='tse'):
         if not latest:
             continue
         close_now = latest.get('close', 0)
-        if n == 1 or oldest_d == latest_d:
+        if n == 1 or base_d == latest_d:
             pct = latest.get('pct', 0)
         else:
-            oldest = oldest_stocks.get(code)
-            close_base = oldest.get('close', 0) if oldest else 0
+            close_base = 0
+            for bd, bmap in base_maps:
+                if bd == latest_d:
+                    continue
+                b = bmap.get(code)
+                if b and b.get('close'):
+                    close_base = b['close']; break
             pct = round((close_now / close_base - 1) * 100, 2) if close_base else latest.get('pct', 0)
         result.append({
             'code': code,
@@ -256,7 +269,7 @@ def compute_period(sorted_dates, n, all_data, market='tse'):
         })
     sectors.sort(key=lambda x: x['totalValue'], reverse=True)
 
-    return {'fromDate': oldest_d, 'toDate': latest_d, 'actualDays': len(use), 'sectors': sectors}
+    return {'fromDate': use[-1], 'toDate': latest_d, 'actualDays': len(use), 'sectors': sectors}
 
 def main():
     print("=" * 52)
@@ -305,6 +318,7 @@ def main():
     # 4. 上櫃行情
     print("\n[4/5] 抓取上櫃行情...")
     otc_stocks = []
+    otc_date = None
     try:
         otc_raw = fetch("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes")
         otc_stocks, otc_date = parse_otc_stocks(otc_raw, code_to_ind_otc, shares_map_otc)
@@ -319,14 +333,33 @@ def main():
 
     # 5. 儲存 & 計算
     print(f"\n[5/5] 儲存資料與計算熱力圖...")
-    out_path = os.path.join(DATA_DIR, f"{trade_date}.json")
-    with open(out_path, 'w', encoding='utf-8') as f:
-        json.dump({'date': trade_date, 'tse': tse_stocks, 'otc': otc_stocks}, f, ensure_ascii=False)
-    print(f"      {trade_date}.json (TSE:{len(tse_stocks)} OTC:{len(otc_stocks)})")
+    # 各市場以「自己來源回報的交易日」存檔，並合併進該日檔案。
+    # 原因：TPEX(上櫃) 當天傍晚就更新，TSE(上市) STOCK_DAY_ALL 隔天早上才更新，
+    # 盤後抓取時兩者常落在不同日；若一律套 TSE 日期，OTC 會整段位移一天（見 5328 案例）。
+    written = set()
+    def merge_save(date, key, stocks):
+        if not date or not stocks:
+            return
+        path = os.path.join(DATA_DIR, f"{date}.json")
+        try:
+            with open(path, encoding='utf-8') as f:
+                obj = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            obj = {'date': date, 'tse': [], 'otc': []}
+        obj['date'] = date
+        obj[key] = stocks
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(obj, f, ensure_ascii=False)
+        written.add(date)
+        print(f"      {date}.json ← {key.upper()} {len(stocks)} 支")
+
+    merge_save(trade_date, 'tse', tse_stocks)
+    merge_save(otc_date or trade_date, 'otc', otc_stocks)
 
     manifest = load_manifest()
-    if trade_date not in manifest['dates']:
-        manifest['dates'].append(trade_date)
+    for d in written:
+        if d not in manifest['dates']:
+            manifest['dates'].append(d)
     # 移除 manifest 裡沒有對應 JSON 的日期（例如手動刪檔後殘留的記錄）
     manifest['dates'] = [d for d in manifest['dates']
                          if os.path.exists(os.path.join(DATA_DIR, f"{d}.json"))]
