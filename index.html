@@ -558,7 +558,7 @@ body{
     // 盤中即時／收盤暫存：今日資料有效時，覆蓋所有週期的漲跌幅
     // 1d：直接用即時漲跌幅；多日：從靜態資料反推基期股價，算到今日收盤的真實幅度
     // 收盤後到正式資料更新前，沿用 13:30 最後狀態；跨日則自動失效
-    const intradayActive = !!(intradayData && intradayStamp === twDateStr());
+    const intradayActive = snapshotValid();
     if (intradayActive) {
       sectors = sectors.map(sec => {
         const stocks = sec.stocks.map(stk => {
@@ -719,6 +719,21 @@ body{
     return `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, '0')}${String(d.getUTCDate()).padStart(2, '0')}`;
   }
 
+  // 靜態資料涵蓋的最新交易日（取 1d 各市場 toDate 最大值，格式 YYYYMMDD）
+  function staticLatestDate() {
+    if (typeof CHART_DATA === 'undefined' || !CHART_DATA['1d']) return '0';
+    const pd = CHART_DATA['1d'];
+    const a = (pd.tse && pd.tse.toDate) || '0';
+    const b = (pd.otc && pd.otc.toDate) || '0';
+    return a > b ? a : b;
+  }
+
+  // 暫存快照是否仍應顯示：代表的交易日比靜態資料新（橋接「收盤 → 靜態更新」的空窗，
+  // 跨日、週末都持續有效，直到靜態資料真正追上才交還給靜態資料）
+  function snapshotValid() {
+    return !!(intradayData && intradayStamp && intradayStamp > staticLatestDate());
+  }
+
   // 收盤暫存：把盤中資料存進 localStorage，收盤後（含重新整理／新分頁）沿用 13:30 狀態
   const LS_KEY = 'heatmap_intraday';
   function saveIntradayCache() {
@@ -727,7 +742,10 @@ body{
   function loadIntradayCache() {
     try {
       const o = JSON.parse(localStorage.getItem(LS_KEY) || 'null');
-      if (o && o.stamp === twDateStr() && o.data) { intradayData = o.data; intradayStamp = o.stamp; return true; }
+      // 只要快照比靜態資料新就還原（跨日／週末仍沿用，直到靜態追上）
+      if (o && o.data && o.stamp && o.stamp > staticLatestDate()) {
+        intradayData = o.data; intradayStamp = o.stamp; return true;
+      }
     } catch (e) {}
     return false;
   }
@@ -862,26 +880,31 @@ body{
       return false;
     }
 
-    // 盤後呼叫時：mis API 仍回傳最終成交價，但需確認日期是今天
-    // 若 API 回傳的是前一天資料（隔日凌晨後 API 重置）→ 放棄，不覆蓋快取
-    const today = twDateStr();
-    if (latestApiDate && latestApiDate !== today) {
-      console.warn(`mis API 日期 ${latestApiDate} 非今日 ${today}，放棄`);
+    // 以 API 實際回傳的交易日為戳記（盤後／週末仍會回傳最近一次收盤）
+    const stamp = latestApiDate || twDateStr();
+    // 只有比靜態資料新的快照才有意義；若靜態已涵蓋（或更新）此日 → 交還靜態，不覆蓋
+    if (stamp <= staticLatestDate()) {
+      console.warn(`快照日期 ${stamp} 未新於靜態資料 ${staticLatestDate()}，交還靜態`);
       return false;
     }
 
     intradayData = map;
-    intradayStamp = today;
+    intradayStamp = stamp;
     saveIntradayCache();
 
-    // 更新時間戳（盤中態 badge）
-    const d = twNow();
-    const ts = [d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds()]
-      .map(n => String(n).padStart(2, '0')).join(':');
+    // 更新 badge：盤中顯示即時時間，盤後／週末顯示收盤暫存態
     const badge = document.getElementById('intraday-badge');
-    badge.classList.remove('closed');
-    document.getElementById('intraday-label').textContent = '盤中即時';
-    document.getElementById('intraday-time').textContent = ts;
+    badge.style.display = 'inline-flex';
+    if (isMarketOpen()) {
+      const d = twNow();
+      const ts = [d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds()]
+        .map(n => String(n).padStart(2, '0')).join(':');
+      badge.classList.remove('closed');
+      document.getElementById('intraday-label').textContent = '盤中即時';
+      document.getElementById('intraday-time').textContent = ts;
+    } else {
+      showClosedBadge();
+    }
 
     render();
     return true;
@@ -898,12 +921,12 @@ body{
   function stopIntraday() {
     clearInterval(intradayTimer);
     intradayTimer = null;
-    // 若今天曾抓到盤中資料 → 切換為收盤暫存態（不清空 intradayData）
-    if (intradayData && intradayStamp === twDateStr()) {
+    // 快照仍比靜態新 → 切換為收盤暫存態（不清空 intradayData）
+    if (snapshotValid()) {
       showClosedBadge();
       render();
     } else {
-      // 非當日暫存（例如隔天開盤前）→ 清空回收盤資料
+      // 靜態已追上 → 清空回靜態資料
       intradayData = null;
       intradayStamp = null;
       document.getElementById('intraday-badge').style.display = 'none';
@@ -925,21 +948,16 @@ body{
     document.getElementById('hdr-sub').textContent = '請先執行 fetch_data.py';
   } else {
     render();
-    // 若盤中時間自動啟動即時模式；否則嘗試載入今天 13:30 的收盤暫存
+    // 盤中→即時輪詢；否則沿用收盤暫存；都沒有且靜態落後 → 抓最近一次收盤來橋接
     if (isMarketOpen()) {
       startIntraday();
     } else if (loadIntradayCache()) {
       showClosedBadge();
       render();
-    } else {
-      // 盤後首次載入（無快取）：mis API 收盤後仍持續提供當日最終成交價，
-      // 直接抓一次收盤快照並存入 localStorage，下次載入就不需要再抓
-      const day = twNow().getUTCDay();
-      if (day !== 0 && day !== 6) { // 週末不嘗試
-        fetchAllIntraday().then(ok => {
-          if (ok) showClosedBadge();
-        }).catch(() => {});
-      }
+    } else if (staticLatestDate() < twDateStr()) {
+      // 靜態資料尚未更新到最近交易日（含週末看週五收盤）→ mis API 仍提供最終成交價，
+      // 抓一次來橋接；fetchAllIntraday 內的 stamp<=靜態 防呆會自動放棄無意義的覆蓋
+      fetchAllIntraday().catch(() => {});
     }
     // 每分鐘檢查是否進入/離開盤中時間
     setInterval(() => {
