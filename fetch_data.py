@@ -9,6 +9,7 @@ import json
 import os
 import datetime
 import sys
+import time
 from collections import defaultdict
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -42,10 +43,23 @@ _X509_STRICT = getattr(ssl, 'VERIFY_X509_STRICT', 0)
 if _X509_STRICT:
     _SSL_CTX.verify_flags &= ~_X509_STRICT
 
-def fetch(url):
-    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-    with urllib.request.urlopen(req, timeout=20, context=_SSL_CTX) as r:
-        return json.loads(r.read())
+def fetch(url, retries=4, backoff=5):
+    # GitHub runner 對 TWSE/TPEX openapi 偶爾 timeout／連線被重置／短暫 5xx，
+    # 單次嘗試一遇瞬斷就丟例外，導致整個 workflow run 失敗（並可能永久漏掉當日資料）。
+    # 重試＋線性退避讓短暫故障能自癒；全數失敗才往外拋。
+    last_err = None
+    for attempt in range(retries):
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req, timeout=20, context=_SSL_CTX) as r:
+                return json.loads(r.read())
+        except Exception as e:
+            last_err = e
+            if attempt < retries - 1:
+                wait = backoff * (attempt + 1)
+                print(f"      抓取失敗（第 {attempt + 1}/{retries} 次）: {e} → {wait}s 後重試")
+                time.sleep(wait)
+    raise last_err
 
 def parse_num(s):
     if s is None:
