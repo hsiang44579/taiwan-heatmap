@@ -213,6 +213,12 @@ def get_stocks_for_market(day_data, market):
     return []
 
 def compute_period(sorted_dates, n, all_data, market='tse'):
+    # 只取「該市場當天確實有資料」的日期。
+    # 原因：TPEX(上櫃) 傍晚更新、TSE(上市) STOCK_DAY_ALL 隔天早上才更新，
+    # 兩者常差一天；若用全體最新日期當基準，上市在該日尚無資料就會整片空白
+    # （例：08-03 上櫃已更新、上市仍停在 07-31）。各市場各自用自己的交易日序列，
+    # 上市顯示自己的最新收盤日、上櫃顯示自己的，累積 N 日跨度也才正確。
+    sorted_dates = [d for d in sorted_dates if get_stocks_for_market(all_data.get(d), market)]
     use = sorted_dates[:n]
     if not use:
         return None
